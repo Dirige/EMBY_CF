@@ -1,6 +1,6 @@
 name: Main Workflow
 
-on:
+于:
   push:
     branches: [ main, master ]
   workflow_dispatch:
@@ -16,4 +16,4 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy worker.js --name ${{ secrets.CLOUDFLARE_WORKER_NAME }}
+          command: deploy worker.js --name ${{ secrets.CLOUDFLARE_WORKER_NAME }} --compatibility-date 2026-03-01
