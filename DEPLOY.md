@@ -12,17 +12,23 @@
 
 ## 部署方式
 
+#### 1. 准备工作
+
+1. 注册并登录 [Cloudflare](https://dash.cloudflare.com/) 账号
+2. 确保你有一个已验证的域名（可以在DNSHE中免费注册一个域名托管到Cloudflare）
+3. DNSHE地址：https://my.dnshe.com/index.php?m=domain_hub     请输入我的邀请码（ZPB06CED7F）谢谢
+
 ### 方式一：GitHub 一键部署（推荐）
 
 1. **Fork 仓库**：
    - 访问 [GitHub 仓库](https://github.com/Dirige/EMBY_CF)
    - 点击 "Fork"按钮创建自己的副本
 
-2. **配置 Cloudflare API 令牌**：
+2. **获取 Cloudflare API 令牌**：
    - 登录 [Cloudflare 控制台](https://dash.cloudflare.com/)
-   - 点击右上角头像 → "My Profile"（我的资料）→ "API Tokens"（API令牌）
+   - 点击右上角头像 → "My Profile"（配置文件）→ "API Tokens"（API令牌）
    - 点击 "Create Token"（创建令牌）
-   - 选择 "Edit Cloudflare Workers"（编辑CloudflareWorkers）
+   - 选择模板 "Edit Cloudflare Workers"（编辑CloudflareWorkers）
    - 设置权限后点击 "Create Token"（创建令牌）并保存令牌值
 
 3. **配置仓库 Secrets**：
@@ -30,48 +36,44 @@
    - 点击 "New repository secret"（新建仓库密钥）
    - 添加以下 Secrets：
      - `CLOUDFLARE_API_TOKEN`：你的 Cloudflare API 令牌
-     - `CLOUDFLARE_ACCOUNT_ID`：你的 Cloudflare 账户 ID（在 Cloudflare 控制台左下角查看）
+     - `CLOUDFLARE_ACCOUNT_ID`：你的 Cloudflare 账户 ID（在 Cloudflare "Workers & Pages" 页面右下角）
      - `CLOUDFLARE_WORKER_NAME`：你想要创建的 Worker 名称（小写字母、数字和破折号）
 
 4. **触发部署**：
    - 在仓库页面，点击 "Actions"（操作）标签
-   - 选择 "Deploy to Cloudflare Workers"（部署到Cloudflare Workers）
+   - 选择 "Main Workflow "（主要工作流）
    - 点击 "Run workflow"（运行工作流）
    - 等待部署完成
 
 5. **配置 D1 数据库**：
    - 部署完成后，登录 Cloudflare 控制台
-   - 按照下方 "方式二" 中的步骤 4 配置 D1 数据库
+   - 按照下方 "方式二" 中的步骤 3 配置 D1 数据库
 
 ### 方式二：手动部署
 
-#### 1. 准备工作
 
-1. 注册并登录 [Cloudflare](https://dash.cloudflare.com/) 账号
-2. 确保你有一个已验证的域名（可以使用Cloudflare提供的免费域名）
 
-#### 2. 创建Worker
+#### 1. 创建Worker
 
-1. 登录 Cloudflare 控制台，左侧菜单点击 "Workers & Pages"（Workers & Pages）
-2. 点击 "Create"（创建）按钮
-3. 选择 "Create Worker"（创建Worker）
+1. 登录 Cloudflare 控制台，左侧菜单点击 "Workers & Pages"
+2. 点击 "Create"（创建应用程序）按钮
+3. 选择 "Create Worker"（从hello world开始）
 4. 为你的Worker取一个名称（例如：emby-proxy），然后点击 "Deploy"（部署）
 5. 部署完成后，点击 "Edit code"（编辑代码）
 
-#### 3. 上传代码
+#### 2. 上传代码
 
 1. 在编辑器中删除默认的Worker代码
 2. 将 `worker.js` 文件中的所有内容复制粘贴到编辑框中
 3. 点击 "Save and deploy"（保存并部署）
 
-#### 4. 配置D1数据库（可选，用于统计功能）
+#### 3. 配置D1数据库（可选，用于统计功能）
 
 如果需要启用统计功能，需要配置D1数据库：
 
-1. 在Cloudflare控制台左侧菜单点击 "Workers & Pages"（Workers & Pages）
+1. 在Cloudflare控制台左侧菜单点击 "Storage & databases"（存储和数据库）
 2. 点击 "D1"（D1 数据库）
-3. 点击 "Create"（创建）
-4. 选择 "Create a database"（创建数据库），输入数据库名称
+3. 选择 "Create a database"（创建数据库），输入数据库名称
 5. 等待数据库创建完成，点击数据库名称进入详情页
 6. 换到 "Console"（控制台）标签页，执行以下SQL语句创建表：
 
@@ -91,7 +93,7 @@ CREATE TABLE IF NOT EXISTS auto_emby_daily_stats (
 12. 选择你刚刚创建的数据库
 13. 点击 "Save"（保存）
 
-#### 5. 配置自定义域名（可选）
+#### 4. 配置自定义域名（可选）
 
 1. 在Worker编辑页面，点击 "Triggers"（触发器）标签
 2. 在 "Custom Domains"（自定义域名）部分点击 "Add Custom Domain"（添加自定义域名）

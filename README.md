@@ -26,7 +26,7 @@
 
 1. Fork 本仓库
 2. 配置 Cloudflare API 令牌
-3. 配置仓库 Secrets（注意：Worker 名称必须是小写、字母数字，只能包含破折号作为特殊字符）
+3. 配置仓库 Secrets
 4. 触发 GitHub Actions 工作流
 
 详细步骤请查看 [DEPLOY.md](DEPLOY.md) 文件。
@@ -118,9 +118,9 @@ https://你的worker域名/你的emby服务器地址:端口
 3. **手动部署到 Cloudflare Workers**：
    - 登录 Cloudflare 控制台
    - 点击 "Workers & Pages"
-   - 点击 "Create Application" → "Create Worker"
+   - 点击 "Create Application"（创建应用程序） → "Create Worker"(从hello world开始)
    - 为 Worker 取一个名称（必须符合 Cloudflare 的命名要求）
-   - 部署完成后，点击 "Edit Code"
+   - 部署完成后，点击 "Edit Code"（部署）
    - 删除默认代码，将 `emos反代.js` 文件中的内容复制粘贴到编辑框
    - 点击 "Save and Deploy"
 4. **配置自定义域名**（可选）
