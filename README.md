@@ -94,9 +94,9 @@ https://你的worker域名/你的emby服务器地址:端口
 
 ## 相关服务
 - **已部署好可直接食用地址**
-- **通用反代地址**：https://fd.dirige.de5.net（可替换为您自己的域名）
-- **EMOS 反代域名**：https://emos.dirige.de5.net（可替换为您自己的域名）
-
+- **通用反代地址**：https://fd.dirige.de5.net    三网
+- **通用反代地址**：https://fd.255432.cc.cd      移动
+- **通用反代地址**：https://fd.255432.de5.net    联通
 
 ## 许可证
 
