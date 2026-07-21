@@ -1,11 +1,17 @@
-name = "fd"
+name = "emby-proxy"
 main = "worker.js"
 compatibility_date = "2025-05-15"
+compatibility_flags = ["nodejs_compat"]
 
 [vars]
 BASE_DOMAIN = "example.com"
+ADMIN_TOKEN = ""
+CF_API_TOKEN = ""
+CF_ZONE_ID = ""
+CF_ACCOUNT_ID = ""
+DNS_RECORD_NAME = "emby"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "fd"
+database_name = "emby-proxy-db"
 database_id = "5f966506-c2c9-46b0-8f85-9c6ba639c568"
