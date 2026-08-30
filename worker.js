@@ -1276,6 +1276,34 @@ function normalizeAlias(a) {
   return String(a || '').trim().toLowerCase().replace(/^\/+|\/+$/g, '');
 }
 
+function parseDirectProxyTarget(pathname, search = '') {
+  let target = String(pathname || '').replace(/^\/+/, '');
+  if (!target) return { matched: false };
+
+  try {
+    target = decodeURIComponent(target);
+  } catch (_) {}
+
+  const explicitProtocol = /^https?:\/\//i.test(target) || /^https?:\/(?!\/)/i.test(target);
+  const firstSegment = target.split('/')[0].toLowerCase();
+  const shorthandTarget = firstSegment.includes('.') || firstSegment.includes(':');
+  if (!explicitProtocol && !shorthandTarget) return { matched: false };
+
+  target = target.replace(/^(https?):\/(?!\/)/i, '$1://');
+  if (!/^https?:\/\//i.test(target)) target = `https://${target}`;
+
+  try {
+    const parsed = new URL(target);
+    if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) {
+      return { matched: true, error: 'Invalid URL protocol' };
+    }
+    parsed.search = search;
+    return { matched: true, url: parsed.toString() };
+  } catch (_) {
+    return { matched: true, error: 'Invalid URL format' };
+  }
+}
+
 async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
   const {
     enableCache = true,
@@ -1285,8 +1313,12 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
     matchedUserId = null,
     needsSpeedTest = false,
     preferredHost = null,
+    proxyPathPrefix = null,
   } = opts;
   const proxyOrigin = new URL(request.url).origin;
+  const proxyPrefix = proxyPathPrefix === null
+    ? (matchedPrefix ? `/${matchedPrefix}` : null)
+    : proxyPathPrefix;
 
   if (!upstreamUrls.length) return new Response('404: Target empty', { status: 404 });
 
@@ -1424,8 +1456,6 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
     return new Response('所有线路不可用: ' + (lastError?.message || 'Unknown'), { status: 502 });
   }
 
-  const safePrefix = matchedPrefix ? `/${matchedPrefix}` : '';
-
   if (!compatMode) {
     const location = finalResponse.headers.get('Location');
     if (location && finalResponse.status >= 300 && finalResponse.status < 400) {
@@ -1439,9 +1469,9 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
           rh.set('Location', redirectUrl.toString());
           return new Response(finalResponse.body, { status: finalResponse.status, headers: rh });
         }
-        if (matchedPrefix) {
+        if (proxyPrefix !== null) {
           const rh = new Headers(finalResponse.headers);
-          rh.set('Location', `${safePrefix}/${encodeURIComponent(redirectUrl.toString())}`);
+          rh.set('Location', `${proxyPrefix}/${encodeURIComponent(redirectUrl.toString())}`);
           return new Response(finalResponse.body, { status: finalResponse.status, headers: rh });
         }
         const fh = new Headers(request.headers);
@@ -1460,7 +1490,7 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
   const responseHeaders = new Headers(finalResponse.headers);
   const contentType = finalResponse.headers.get('content-type') || '';
 
-  if (!compatMode && finalResponse.status === 200 && contentType.includes('json') && matchedPrefix) {
+  if (!compatMode && finalResponse.status === 200 && contentType.includes('json') && proxyPrefix !== null) {
     const urlPath = lastUpstreamUrl.pathname.toLowerCase();
     if (urlPath.includes('playbackinfo')) {
       try {
@@ -1474,11 +1504,11 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
                   const mediaUrl = new URL(source[key]);
                   const isDirectDomain = MANUAL_REDIRECT_DOMAINS.some(d => mediaUrl.hostname.endsWith(d));
                   if (!isDirectDomain) {
-                    source[key] = proxyOrigin + safePrefix + '/' + source[key];
+                    source[key] = proxyOrigin + proxyPrefix + '/' + source[key];
                     modified = true;
                   }
                 } catch (_) {
-                  source[key] = proxyOrigin + safePrefix + '/' + source[key];
+                  source[key] = proxyOrigin + proxyPrefix + '/' + source[key];
                   modified = true;
                 }
               }
@@ -1493,7 +1523,7 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
     }
   }
 
-  if (!compatMode && finalResponse.status === 200 && matchedPrefix) {
+  if (!compatMode && finalResponse.status === 200 && proxyPrefix !== null) {
     const urlPath = lastUpstreamUrl.pathname.toLowerCase();
     if (urlPath.endsWith('.m3u8')) {
       try {
@@ -1503,9 +1533,9 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
             try {
               const mUrl = new URL(match);
               const isDirectDomain = MANUAL_REDIRECT_DOMAINS.some(d => mUrl.hostname.endsWith(d));
-              return isDirectDomain ? match : proxyOrigin + safePrefix + '/' + match;
+              return isDirectDomain ? match : proxyOrigin + proxyPrefix + '/' + match;
             } catch (_) {
-              return proxyOrigin + safePrefix + '/' + match;
+              return proxyOrigin + proxyPrefix + '/' + match;
             }
           });
           responseHeaders.delete('Content-Length');
@@ -2629,8 +2659,6 @@ export default {
       return handleAdminApi(request, env, url);
     }
 
-    const pathFirst = url.pathname.split('/').filter(Boolean)[0]?.toLowerCase();
-
     // ==================== 子域名路由 ====================
     const hostname = url.hostname;
     const baseDomain = String(env.BASE_DOMAIN || '');
@@ -2655,21 +2683,13 @@ export default {
       }
     }
 
-    const looksLikeDirectUrl = url.pathname.startsWith('/http://') || url.pathname.startsWith('/https://') ||
-      (pathFirst && (pathFirst.includes('.') || pathFirst.includes(':')));
-
-    if (looksLikeDirectUrl) {
-      let path = url.pathname.substring(1);
-      if (path.startsWith('/')) return new Response('Invalid proxy format', { status: 400 });
-      path = path.replace(/^(https?)\/(?!\/)/, '$1://');
-      if (!path.startsWith('http')) path = 'https://' + path;
-      try {
-        const upstreamUrl = new URL(path);
-        upstreamUrl.search = url.search;
-        return proxyDirectUrl(request, env, ctx, [upstreamUrl.toString()], { enableCache: true });
-      } catch {
-        return new Response('Invalid URL format', { status: 400 });
-      }
+    const directProxy = parseDirectProxyTarget(url.pathname, url.search);
+    if (directProxy.matched) {
+      if (directProxy.error) return new Response(directProxy.error, { status: 400 });
+      return proxyDirectUrl(request, env, ctx, [directProxy.url], {
+        enableCache: true,
+        proxyPathPrefix: '',
+      });
     }
 
     if (!env.DB) {
