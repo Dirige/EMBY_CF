@@ -1,29 +1,42 @@
+<div align="center">
+
 # EMBY_CF
 
-一个运行在 Cloudflare Workers 上的 Emby 反向代理与多用户路由面板。项目集成了 D1 数据库、邀请码注册、用户子域名、自动 DNS、优选域名测速、路由线路测速和基础播放统计。
+**Emby 反向代理 · 多用户路由面板**
 
-界面风格偏向深色控制台，文档也按“先部署、再配置、再使用、最后排错”的顺序组织。涉及 GitHub 或 Cloudflare 控制台操作的地方，会保留英文按钮名并加中文对照，例如 `Settings（设置）`、`Actions（操作）`、`Variables and Secrets（变量和机密）`，方便按页面查找。
+`HTTP/HTTPS` · `WebSocket` · `D1` · `Auto DNS` · `邀请制` · `测速`
 
-## 功能特性
+![Platform](https://img.shields.io/badge/Cloudflare-Workers-F38020?style=flat-square&logo=cloudflare&logoColor=white)
+![Database](https://img.shields.io/badge/D1-Database-00E5FF?style=flat-square&logo=cloudflare&logoColor=white)
+![Runtime](https://img.shields.io/badge/Proxy-Emby/Jellyfin-00FF9D?style=flat-square)
+![License](https://img.shields.io/badge/License-MIT-00FF9D?style=flat-square)
+
+[快速部署](#快速部署-deploy) · [必要配置](#必要配置-config) · [部署教程](DEPLOY.md) · [常见问题](#常见问题-faq)
+
+</div>
+
+---
+
+## 功能特性 <sub>FEATURES</sub>
 
 | 功能 | 说明 |
 |---|---|
-| Emby 反向代理 | 支持 HTTP、HTTPS、WebSocket，适用于 Emby/Jellyfin 类服务代理 |
-| 管理员全局路由 | 管理员可在后台创建公共路由，例如 `/emby` |
-| 用户独立路由 | 每个用户可在自己的子域名下创建路由，不同用户可以使用同名路径 |
+| 反向代理 | 支持 HTTP、HTTPS、WebSocket，适用于 Emby / Jellyfin 类服务 |
+| 管理员全局路由 | 后台创建公共路由，例如 `/emby`，作为统一入口 |
+| 用户独立路由 | 每个用户在自己的子域名下创建路由，不同用户可使用同名路径 |
 | 邀请码注册 | 管理员生成邀请码，用户凭邀请码注册 |
-| 用户子域名 | 注册后自动创建 `用户名.根域名` |
-| 自动 DNS | 自动识别域名、IPv4、IPv6，并创建 `CNAME`、`A`、`AAAA` 记录 |
-| 优选入口 | 用户可把自己的子域名指向优选域名或优选 IP |
-| 延迟测速 | 支持优选域名测速、路由目标线路测速，并缓存测速结果 |
+| 用户子域名 | 注册后自动创建 `用户名.根域名` 三级子域名 |
+| 自动 DNS | 自动识别域名、IPv4、IPv6，对应创建 `CNAME` / `A` / `AAAA` 记录 |
+| 优选入口 | 用户可将自己的子域名指向优选域名或优选 IP |
+| 延迟测速 | 优选域名测速、路由目标线路测速，并缓存测速结果 |
 | 数据库维护 | 后台可重置业务表，重新初始化 D1 表结构 |
 | 统计记录 | 记录播放与 PlaybackInfo 请求，便于观察使用情况 |
 
-## 路由模型
+## 路由模型 <sub>ROUTING</sub>
 
 ### 管理员全局路由
 
-管理员后台创建的路由属于全局路由，适合放公共入口或默认代理。
+管理员后台创建的路由属于全局路由，适合放置公共入口或默认代理：
 
 ```text
 https://你的主入口域名/emby
@@ -32,69 +45,66 @@ https://你的 workers.dev 域名/emby
 
 ### 用户独立路由
 
-用户路由按用户子域名隔离。也就是说，同一个路径只要求在同一个用户账号内不重复，不要求全站唯一。
+用户路由按子域名隔离。同一个路径只要求在**同一个用户账号内**不重复，不要求全站唯一：
 
 | 用户 | 用户路由 | 访问地址 | 实际目标 |
 |---|---|---|---|
-| `111` | `/emby` | `https://111.dirige.de5.net/emby` | 用户 `111` 自己配置的 Emby |
-| `222` | `/emby` | `https://222.dirige.de5.net/emby` | 用户 `222` 自己配置的 Emby |
+| `111` | `/emby` | `https://111.example.com/emby` | 用户 `111` 配置的 Emby |
+| `222` | `/emby` | `https://222.example.com/emby` | 用户 `222` 配置的 Emby |
 
-如果用户子域名下没有对应路径，Worker 会尝试回落到管理员全局路由。
+> [!NOTE]
+> 如果用户子域名下没有对应路径，Worker 会自动回落到管理员全局路由。
 
-## 用户子域名和 DNS
+## 用户子域名与 DNS <sub>SUBDOMAIN</sub>
 
-用户注册成功后，系统会自动创建：
+用户注册成功后，系统自动创建 `用户名.BASE_DOMAIN`，默认指向 `youxuan.cf.090227.xyz`。
 
-```text
-用户名.BASE_DOMAIN
-```
+用户可在后台「我的访问域名」中修改「优选域名 / IP」。无需手动选择 DNS 记录类型，系统自动识别：
 
-默认指向：
-
-```text
-youxuan.cf.090227.xyz
-```
-
-用户可在后台的“我的访问域名”里修改“优选域名 / IP”。这里不需要手动选择 DNS 类型，系统会自动识别：
-
-| 用户输入 | 自动创建的 DNS 记录 | 示例 |
+| 用户输入 | 自动创建的记录 | 示例 |
 |---|---|---|
 | 域名 | `CNAME` | `youxuan.example.com` |
 | IPv4 | `A` | `1.2.3.4` |
 | IPv6 | `AAAA` | `2606:4700:4700::1111` |
 
-修改时会先删除该子域名下已有的 `A/AAAA/CNAME` 记录，再创建新的记录，避免同名记录冲突。
+修改时会先删除该子域名下已有的 `A/AAAA/CNAME` 记录，再创建新记录，避免同名冲突。
 
-## 后台入口
+## 后台入口 <sub>ENDPOINTS</sub>
 
 | 入口 | 用途 |
 |---|---|
-| `/admin` | 管理员登录、路由管理、邀请码管理、数据库维护 |
+| `/admin` | 管理员登录 · 路由管理 · 邀请码管理 · 数据库维护 |
 | `/register` | 用户注册 |
-| 用户登录后的 `/admin` | 普通用户控制台，管理自己的访问域名和路由 |
-| `/stats` | 查看基础统计 JSON |
-| `/health` | 查看 Worker 健康状态 |
+| `/admin`（登录后） | 普通用户控制台 · 管理访问域名与路由 |
+| `/stats` | 基础统计 JSON |
+| `/health` | Worker 健康状态 |
 
-## 必要配置
+> [!WARNING]
+> `/stats` 端点为**公开接口**，无鉴权，任何知道域名的人都可查看播放统计。如需隐藏，请勿对外泄露该地址。
 
-这些值建议在 GitHub Secrets 或 Cloudflare Worker 的 `Variables and Secrets（变量和机密）` 中填写。不要在 `wrangler.toml` 里写空白密码。
+## 必要配置 <sub>CONFIG</sub>
+
+这些值建议填写在 GitHub Secrets 或 Worker 的 `Variables and Secrets（变量和机密）` 中。**不要在 `wrangler.toml` 里写空白密码。**
 
 | 名称 | 必需 | 建议位置 | 说明 |
-|---|---:|---|---|
-| `CF_API_TOKEN` | 是 | GitHub Secrets | 部署 Worker、创建 D1、配置 Worker 路由 |
-| `CF_ACCOUNT_ID` | 是 | GitHub Secrets | Cloudflare 账户 ID |
-| `BASE_DOMAIN` | 是 | GitHub Secrets / Worker Variable | 用户子域名根域名，例如 `dirige.de5.net` |
-| `CF_ZONE_ID` | 是 | GitHub Secrets / Worker Variable | `BASE_DOMAIN` 所在 Zone ID |
-| `CF_DNS_API_TOKEN` | 推荐 | GitHub Secrets / Worker Secret | Worker 运行时自动创建和修改 DNS |
-| `ADMIN_USERNAME` | 是 | Worker Variable | 管理员用户名 |
-| `ADMIN_PASSWORD` | 是 | Worker Secret | 管理员密码，建议部署后手动填写 |
-| `SESSION_SECRET` | 推荐 | Worker Secret | 用户登录会话签名密钥 |
-| `CF_WORKER_NAME` | 否 | GitHub Secrets | Worker 名称，默认 `emby-proxy` |
-| `DNS_RECORD_NAME` | 否 | GitHub Secrets / Worker Variable | 主入口 DNS 记录名，默认 `emby` |
+|---|:---:|---|---|
+| `CF_API_TOKEN` | ✅ | GitHub Secrets | 部署 Worker、创建 D1、配置 Worker 路由 |
+| `CF_ACCOUNT_ID` | ✅ | GitHub Secrets | Cloudflare 账户 ID |
+| `BASE_DOMAIN` | ✅ | GitHub Secrets / Worker Variable | 用户子域名根域名，例如 `dirige.de5.net` |
+| `CF_ZONE_ID` | ✅ | GitHub Secrets / Worker Variable | `BASE_DOMAIN` 所在 Zone ID |
+| `CF_DNS_API_TOKEN` | ✅ | GitHub Secrets / Worker Secret | Worker 运行时自动创建和修改 DNS |
+| `ADMIN_USERNAME` | ✅ | Worker Variable | 管理员用户名，默认 `admin` |
+| `ADMIN_PASSWORD` | ✅ | Worker Secret | 管理员密码，部署后手动填写 |
+| `SESSION_SECRET` | ⚠️ 强烈建议 | Worker Secret | 用户登录会话签名密钥 |
+| `CF_WORKER_NAME` | ⚪ | GitHub Secrets | Worker 名称，默认 `emby-proxy` |
+| `DNS_RECORD_NAME` | ⚪ | GitHub Secrets / Worker Variable | 主入口 DNS 记录名，默认 `emby` |
 
-## D1 数据表
+> [!IMPORTANT]
+> 不设置 `SESSION_SECRET` 时，会话签名会回退到源码中公开的固定密钥，**任何人都可以伪造管理员登录态**。请务必设置一个随机长字符串，例如 `openssl rand -hex 32` 的输出。
 
-Worker 首次请求会自动创建或迁移 D1 表结构。正常情况下不需要手动执行 SQL。
+## D1 数据表 <sub>DATABASE</sub>
+
+Worker 首次收到请求时会自动创建或迁移 D1 表结构，正常情况下**不需要手动执行 SQL**。
 
 | 表名 | 存储内容 |
 |---|---|
@@ -108,28 +118,32 @@ Worker 首次请求会自动创建或迁移 D1 表结构。正常情况下不需
 | `domain_speed_cache` | 优选域名测速缓存 |
 | `domain_best_cache` | 当前网络下的最佳优选入口缓存 |
 
-管理员后台的“重置数据库”会删除并重建这些业务表，但不会删除 D1 数据库实例，也不会修改 Worker 环境变量。
+> [!NOTE]
+> 管理员后台的「重置数据库」会删除并重建以上业务表，但不会删除 D1 数据库实例，也不会修改 Worker 环境变量。
 
-## 快速部署
+## 快速部署 <sub>DEPLOY</sub>
 
 推荐使用 GitHub Actions：
 
 1. Fork 本仓库。
-2. 在仓库进入 `Settings（设置） -> Secrets and variables（秘密和变量） -> Actions（操作）`。
-3. 添加必需的 GitHub Secrets。
-4. 进入 `Actions（操作） -> Deploy to Cloudflare Workers`，点击 `Run workflow（运行工作流）`。
-5. 部署成功后，到 Cloudflare 控制台进入 Worker，打开 `Settings（设置） -> Variables and Secrets（变量和机密）`，手动确认 `ADMIN_PASSWORD`、`ADMIN_USERNAME`、`CF_ZONE_ID`、`CF_DNS_API_TOKEN` 等变量。
+2. 进入 `Settings（设置）` → `Secrets and variables（秘密和变量）` → `Actions（操作）`。
+3. 添加必需的 GitHub Secrets（见上文「必要配置」）。
+4. 进入 `Actions（操作）` → `Deploy to Cloudflare Workers`，点击 `Run workflow（运行工作流）`。
+5. 部署成功后，到 Cloudflare 控制台进入 Worker，打开 `Settings（设置）` → `Variables and Secrets（变量和机密）`，手动确认 `ADMIN_PASSWORD`、`SESSION_SECRET` 等变量。
+
+> [!TIP]
+> 该工作流同时绑定了 push 触发：Fork 后**每次 push 到 `master` / `main` 都会自动重新部署**。如果只想手动部署，可在 `Actions（操作）` 页面中禁用该工作流。
 
 详细步骤见 [DEPLOY.md](DEPLOY.md)。
 
-## 本地检查
+## 本地检查 <sub>LINT</sub>
 
 ```bash
-node --check worker.js
-wrangler deploy --dry-run
+node --check worker.js        # 需要 Node.js ≥ 22.7（ESM 语法检测）
+wrangler deploy --dry-run     # 无需 Node 版本要求
 ```
 
-## 常见问题
+## 常见问题 <sub>FAQ</sub>
 
 | 问题 | 处理方式 |
 |---|---|
@@ -139,16 +153,18 @@ wrangler deploy --dry-run
 | 用户注册成功但子域名访问 404 | 检查是否添加了 `*.BASE_DOMAIN/*` Worker 路由 |
 | 用户路由访问到全局路由 | 用户后台没有创建同名路径，系统回落到了管理员全局路由 |
 | 邀请码释放后用户名仍占用 | 确认已部署最新版本；释放邀请码会同步删除关联普通用户 |
-| D1 表结构异常 | 在管理员后台执行“重置数据库”重新初始化 |
+| D1 表结构异常 | 在管理员后台执行「重置数据库」重新初始化 |
 
-## 声明
+---
+
+## 声明 <sub>DISCLAIMER</sub>
 
 本项目仅用于学习、研究和自有服务代理测试。请遵守当地法律法规、Cloudflare 服务条款和上游服务条款。使用本项目产生的一切后果由使用者自行承担。
 
-## 交流反馈
+## 交流反馈 <sub>CONTACT</sub>
 
-- Telegram: [https://t.me/Dirige_Proxy](https://t.me/Dirige_Proxy)
+- Telegram：<https://t.me/Dirige_Proxy>
 
-## 许可证
+## 许可证 <sub>LICENSE</sub>
 
 MIT License
