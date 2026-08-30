@@ -1932,7 +1932,7 @@ async function doLogin(){
   err.textContent='';
   if(!u||!p){err.textContent='请填写用户名和密码';return;}
   document.getElementById('loginBtn').disabled=true;
-  try{var r=await fetch('/admin/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});var d=await r.json();if(d.ok){location.href='/admin';return;}err.textContent=d.error||'登录失败';}catch(e){err.textContent='请求失败:'+e.message;}
+  try{var r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});var d=await r.json();if(d.ok){location.href='/admin';return;}err.textContent=d.error||'登录失败';}catch(e){err.textContent='请求失败:'+e.message;}
   document.getElementById('loginBtn').disabled=false;
 }
 </script></div></body></html>`;
