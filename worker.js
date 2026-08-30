@@ -55,6 +55,17 @@ const PIKPAK_DOMAINS = [
 const CORS_JSON = { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' };
 
 let dbReady = false;
+const DATABASE_TABLES = [
+  'routes',
+  'visitor_logs',
+  'request_stats',
+  'auto_emby_daily_stats',
+  'domain_speed_cache',
+  'domain_best_cache',
+  'user_domains',
+  'invite_codes',
+  'users',
+];
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: CORS_JSON });
@@ -412,7 +423,12 @@ function latencyStatus(ms) {
 
 async function initDatabase(env) {
   if (!env.DB || dbReady) return;
-  await env.DB.batch([
+  await createDatabaseTables(env);
+  dbReady = true;
+}
+
+function databaseSchemaStatements(env) {
+  return [
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS routes (
       prefix TEXT PRIMARY KEY, target TEXT NOT NULL,
       remark TEXT DEFAULT '', last_play TEXT DEFAULT '',
@@ -457,13 +473,52 @@ async function initDatabase(env) {
       used_by INTEGER DEFAULT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       used_at DATETIME DEFAULT NULL)`),
+  ];
+}
+
+async function createDatabaseTables(env) {
+  await env.DB.batch([
+    ...databaseSchemaStatements(env),
   ]);
   try { await env.DB.exec(`ALTER TABLE routes ADD COLUMN target_latencies TEXT DEFAULT ''`); } catch(e) {}
   try { await env.DB.exec(`ALTER TABLE routes ADD COLUMN compat_mode TEXT DEFAULT 'off'`); } catch(e) {}
   try { await env.DB.exec(`ALTER TABLE invite_codes ADD COLUMN used_at DATETIME DEFAULT NULL`); } catch(e) {}
   try { await env.DB.exec(`ALTER TABLE user_domains ADD COLUMN dns_record_id TEXT DEFAULT ''`); } catch(e) {}
   try { await env.DB.exec(`ALTER TABLE user_domains ADD COLUMN dns_record_type TEXT DEFAULT ''`); } catch(e) {}
+}
+
+async function resetDatabaseTables(env) {
+  const dnsWarnings = [];
+  let domainRows = [];
+  try {
+    const table = await env.DB.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'user_domains'"
+    ).first();
+    if (table) {
+      const result = await env.DB.prepare('SELECT subdomain FROM user_domains').all();
+      domainRows = result.results || [];
+    }
+  } catch (_) {}
+
+  const dnsConfig = getDnsConfig(env);
+  if (dnsConfig.zoneId && dnsConfig.token) {
+    for (const row of domainRows) {
+      try {
+        await deleteUserDnsRecords(env, row.subdomain);
+      } catch (e) {
+        dnsWarnings.push(`${row.subdomain}: ${e.message}`);
+      }
+    }
+  }
+
+  // Drop and recreate only the tables owned by this Worker. The D1 database
+  // itself and administrator environment variables remain untouched.
+  await env.DB.batch([...DATABASE_TABLES].reverse().map((table) => (
+    env.DB.prepare(`DROP TABLE IF EXISTS ${table}`)
+  )));
+  await createDatabaseTables(env);
   dbReady = true;
+  return dnsWarnings;
 }
 
 async function getEdgeInfo(request) {
@@ -739,11 +794,42 @@ async function handleAdminApi(request, env, url) {
     const body = await request.json().catch(() => ({}));
     const code = String(body.code || '').trim();
     if (!code) return json({ error: '缺少邀请码' }, 400);
-    const result = await env.DB.prepare(
-      "UPDATE invite_codes SET status = 'unused', used_by = NULL, used_at = NULL WHERE code = ? AND status = 'used'"
-    ).bind(code).run();
-    if (!result.meta?.changes) return json({ error: '邀请码不存在或当前未使用' }, 404);
-    return json({ ok: true });
+    const invite = await env.DB.prepare(
+      "SELECT id, used_by FROM invite_codes WHERE code = ? AND status = 'used'"
+    ).bind(code).first();
+    if (!invite) return json({ error: '邀请码不存在或当前未使用' }, 404);
+
+    let user = null;
+    if (invite.used_by !== null && invite.used_by !== undefined) {
+      user = await env.DB.prepare(
+        "SELECT id, username, role FROM users WHERE id = ?"
+      ).bind(invite.used_by).first();
+      if (user?.role === 'admin') {
+        return json({ error: '不能通过释放邀请码删除管理员账号' }, 409);
+      }
+    }
+
+    const dnsWarnings = [];
+    if (user?.username && getDnsConfig(env).zoneId && getDnsConfig(env).token) {
+      try {
+        await deleteUserDnsRecords(env, user.username);
+      } catch (e) {
+        dnsWarnings.push(`${user.username}: ${e.message}`);
+      }
+    }
+
+    const statements = [];
+    if (user) {
+      statements.push(env.DB.prepare('DELETE FROM user_domains WHERE user_id = ?').bind(user.id));
+      statements.push(env.DB.prepare('DELETE FROM users WHERE id = ?').bind(user.id));
+    }
+    statements.push(env.DB.prepare(
+      "UPDATE invite_codes SET status = 'unused', used_by = NULL, used_at = NULL WHERE id = ? AND status = 'used'"
+    ).bind(invite.id));
+    const results = await env.DB.batch(statements);
+    const releaseResult = results[results.length - 1];
+    if (!releaseResult?.meta?.changes) return json({ error: '邀请码释放失败，请重试' }, 500);
+    return json({ ok: true, releasedUsername: user?.username || null, dnsWarnings });
   }
 
   if (url.pathname === '/admin/api/invites/generate' && request.method === 'POST') {
@@ -763,25 +849,16 @@ async function handleAdminApi(request, env, url) {
     if (body.confirmation !== 'RESET DATABASE') {
       return json({ error: '请输入 RESET DATABASE 确认重置' }, 400);
     }
-    const dnsWarnings = [];
-    const domainRows = await env.DB.prepare('SELECT subdomain FROM user_domains').all();
-    if (getDnsConfig(env).zoneId && getDnsConfig(env).token) {
-      for (const row of domainRows.results || []) {
-        try {
-          await deleteUserDnsRecords(env, row.subdomain);
-        } catch (e) {
-          dnsWarnings.push(`${row.subdomain}: ${e.message}`);
-        }
-      }
-    }
-    await env.DB.batch([
-      'routes', 'visitor_logs', 'request_stats', 'auto_emby_daily_stats',
-      'domain_speed_cache', 'domain_best_cache', 'user_domains', 'invite_codes', 'users',
-    ].map((table) => env.DB.prepare(`DELETE FROM ${table}`)));
     try {
-      await env.DB.exec(`DELETE FROM sqlite_sequence WHERE name IN ('routes','visitor_logs','request_stats','auto_emby_daily_stats','domain_speed_cache','domain_best_cache','user_domains','invite_codes','users')`);
-    } catch (_) {}
-    return json({ ok: true, dnsWarnings });
+      const dnsWarnings = await resetDatabaseTables(env);
+      return json({ ok: true, recreated: true, dnsWarnings });
+    } catch (e) {
+      console.error('Database reset failed:', e);
+      return json({
+        ok: false,
+        error: `数据库重建失败：${String(e?.message || '未知错误').slice(0, 180)}`,
+      }, 500);
+    }
   }
 
   return json({ error: 'Not found' }, 404);
@@ -1844,17 +1921,20 @@ function copyUnusedInvites(){
   navigator.clipboard.writeText(unused.join('\\n')).then(()=>showToast('已复制 '+unused.length+' 个邀请码')).catch(()=>showToast('复制失败，请手动选择'));
 }
 async function releaseInvite(code){
-  if(!confirm('确定释放邀请码 '+code+'？释放后它可以再次注册。'))return;
+  if(!confirm('确定释放邀请码 '+code+'？这会同时删除该邀请码绑定的用户账号和 DNS 记录，之后邀请码和用户名都可以再次使用。'))return;
   const r=await fetch('/admin/api/invites/release',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code})});
   const d=await r.json();
-  if(d.ok){showToast('邀请码已释放');loadInvites();}else{showToast(d.error||'释放失败');}
+  if(d.ok){
+    showToast(d.dnsWarnings&&d.dnsWarnings.length?'邀请码和用户已释放，但有 DNS 清理警告':'邀请码和用户已释放');
+    loadInvites();
+  }else{showToast(d.error||'释放失败');}
 }
 async function resetDatabase(){
-  if(!confirm('确定重置数据库？所有用户、邀请码、路由、统计和缓存都会被清空。'))return;
+  if(!confirm('确定重置数据库？所有业务表会被删除并按最新结构重新创建，用户、邀请码、路由、统计和缓存都会被清空。'))return;
   if(prompt('请输入 RESET DATABASE 以确认')!=='RESET DATABASE'){showToast('已取消');return;}
   const r=await fetch('/admin/api/database/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation:'RESET DATABASE'})});
   const d=await r.json();
-  if(d.ok){showToast(d.dnsWarnings&&d.dnsWarnings.length?'数据库已重置，但有 DNS 清理警告':'数据库已重置');loadRoutes();loadInvites();}else{showToast(d.error||'重置失败');}
+  if(d.ok){showToast(d.dnsWarnings&&d.dnsWarnings.length?'数据库已重建，但有 DNS 清理警告':'数据库已删除并重新初始化');loadRoutes();loadInvites();}else{showToast(d.error||'重置失败');}
 }
 
 loadRoutes();
@@ -2019,7 +2099,19 @@ export default {
         if (message.includes('DNS') || message.includes('Cloudflare') || message.includes('邀请码已被')) {
           return json({ ok: false, error: message }, 400);
         }
-        return json({ ok: false, error: '注册失败：数据库操作异常，请稍后重试' }, 500);
+        const lowerMessage = message.toLowerCase();
+        if (
+          lowerMessage.includes('no such table') ||
+          lowerMessage.includes('no such column') ||
+          lowerMessage.includes('constraint') ||
+          lowerMessage.includes('database')
+        ) {
+          return json({
+            ok: false,
+            error: `注册失败：数据库结构异常（${message.slice(0, 180)}），请在管理员后台重新执行“重置数据库”`,
+          }, 500);
+        }
+        return json({ ok: false, error: `注册失败：${message.slice(0, 180) || '数据库操作异常，请稍后重试'}` }, 500);
       }
     }
 
