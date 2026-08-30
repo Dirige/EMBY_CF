@@ -34,6 +34,15 @@
 
 ## 路由模型 <sub>ROUTING</sub>
 
+### 版本选择 <sub>VERSIONS</sub>
+
+| 版本 | 文件 | 适用场景 |
+|---|---|---|
+| 多用户版 | `worker.js` | 多个用户注册、邀请码、独立子域名和独立路由 |
+| 自用部署单用户版 | `single-user/worker.js` | 个人自用部署，不需要公开发放邀请码 |
+
+`single-user/worker.js` 是独立的自用部署版本。公开仓库中的同步密钥为空；如使用主从同步，请在 Worker Secret 中配置 `SYNC_SECRET`。
+
 ### 管理员全局路由
 
 管理员后台创建的路由属于全局路由，适合放置公共入口或默认代理：
@@ -53,7 +62,7 @@ https://你的入口域名/https://emby.example.com:8096/emby/Items
 ```
 
 目标地址支持 `http://`、`https://`、域名、端口和目标路径；该方式适合临时访问或测试。使用 Emby 播放时，系统会自动处理上游返回的跳转地址和播放直链，使其继续经过通用反代入口。
-部署默认入口为 `fd.你的根域名`，无需注册即可直接试用；如果修改了 `DNS_RECORD_NAME`，则使用对应的入口子域名。
+部署时将完整的公共入口填写到 `BASE_DOMAIN`，例如 `fd.dirige.de5.net`。该值会直接作为公共试用入口读取，不再额外拼接固定的 `fd`。程序会自动使用它的上一级域名作为用户子域名根域名，因此注册 `111` 后地址为 `111.dirige.de5.net`。
 
 ### 用户独立路由
 
@@ -69,7 +78,7 @@ https://你的入口域名/https://emby.example.com:8096/emby/Items
 
 ## 用户子域名与 DNS <sub>SUBDOMAIN</sub>
 
-用户注册成功后，系统自动创建 `用户名.BASE_DOMAIN`，默认指向 `youxuan.cf.090227.xyz`。
+用户注册成功后，系统自动创建 `用户名.公共入口的上一级域名`，默认指向 `youxuan.cf.090227.xyz`。
 
 用户可在后台「我的访问域名」中修改「优选域名 / IP」。无需手动选择 DNS 记录类型，系统自动识别：
 
@@ -102,14 +111,13 @@ https://你的入口域名/https://emby.example.com:8096/emby/Items
 |---|:---:|---|---|
 | `CF_API_TOKEN` | ✅ | GitHub Secrets | 部署 Worker、创建 D1、配置 Worker 路由 |
 | `CF_ACCOUNT_ID` | ✅ | GitHub Secrets | Cloudflare 账户 ID |
-| `BASE_DOMAIN` | ✅ | GitHub Secrets / Worker Variable | 用户子域名根域名，例如 `dirige.de5.net` |
+| `BASE_DOMAIN` | ✅ | GitHub Secrets / Worker Variable | 完整公共入口，例如 `fd.dirige.de5.net` |
 | `CF_ZONE_ID` | ✅ | GitHub Secrets / Worker Variable | `BASE_DOMAIN` 所在 Zone ID |
 | `CF_DNS_API_TOKEN` | ✅ | GitHub Secrets / Worker Secret | Worker 运行时自动创建和修改 DNS |
 | `ADMIN_USERNAME` | ✅ | Worker Variable | 管理员用户名，默认 `admin` |
 | `ADMIN_PASSWORD` | ✅ | Worker Secret | 管理员密码，部署后手动填写 |
 | `SESSION_SECRET` | ⚠️ 强烈建议 | Worker Secret | 用户登录会话签名密钥 |
 | `CF_WORKER_NAME` | ⚪ | GitHub Secrets | Worker 名称，默认 `emby-proxy` |
-| `DNS_RECORD_NAME` | ⚪ | GitHub Secrets / Worker Variable | 主入口 DNS 记录名，默认 `fd` |
 
 > [!IMPORTANT]
 > 不设置 `SESSION_SECRET` 时，会话签名会回退到源码中公开的固定密钥，**任何人都可以伪造管理员登录态**。请务必设置一个随机长字符串，例如 `openssl rand -hex 32` 的输出。
@@ -162,7 +170,7 @@ wrangler deploy --dry-run     # 无需 Node 版本要求
 | 管理员密码部署后变空 | 不要在 `wrangler.toml` 写 `ADMIN_PASSWORD = ""`，在 Cloudflare 控制台手动填 Secret |
 | 注册失败：DNS 自动配置未完成 | 检查 `CF_ZONE_ID` 和 `CF_DNS_API_TOKEN` |
 | 注册失败：优选目标必须是合法域名或 IP | 只填写纯域名、IPv4 或 IPv6，不要带路径、端口、账号密码 |
-| 用户注册成功但子域名访问 404 | 检查是否添加了 `*.BASE_DOMAIN/*` Worker 路由 |
+| 用户注册成功但子域名访问 404 | 检查是否添加了 `*.用户域名根/*` Worker 路由 |
 | 用户路由访问到全局路由 | 用户后台没有创建同名路径，系统回落到了管理员全局路由 |
 | 邀请码释放后用户名仍占用 | 确认已部署最新版本；释放邀请码会同步删除关联普通用户 |
 | D1 表结构异常 | 在管理员后台执行「重置数据库」重新初始化 |

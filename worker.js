@@ -97,8 +97,25 @@ function getAdminUsers(env) {
   return String(env.ADMIN_USERS || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
 }
 
+function normalizeConfiguredDomain(value) {
+  return String(value || '').trim().toLowerCase().replace(/\.+$/, '');
+}
+
+// BASE_DOMAIN is the complete public entry domain, for example
+// fd.dirige.de5.net. User subdomains are created below its parent domain.
+function getDomainConfig(env) {
+  const publicEntryDomain = normalizeConfiguredDomain(env.BASE_DOMAIN);
+  const labels = publicEntryDomain.split('.').filter(Boolean);
+  const userBaseDomain = labels.length >= 3 ? labels.slice(1).join('.') : publicEntryDomain;
+  return { publicEntryDomain, userBaseDomain };
+}
+
 function getBaseDomain(env) {
-  return String(env.BASE_DOMAIN || 'dirige.de5.net').trim().toLowerCase().replace(/\.+$/, '');
+  return getDomainConfig(env).userBaseDomain;
+}
+
+function getPublicEntryDomain(env) {
+  return getDomainConfig(env).publicEntryDomain;
 }
 
 function isDnsLabel(value) {
@@ -2660,26 +2677,26 @@ export default {
     }
 
     // ==================== 子域名路由 ====================
-    const hostname = url.hostname;
-    const baseDomain = String(env.BASE_DOMAIN || '');
-    if (baseDomain && hostname.endsWith('.' + baseDomain) && hostname !== baseDomain) {
-      const subdomain = hostname.slice(0, hostname.length - ('.' + baseDomain).length);
-      const publicEntry = normalizeAlias(env.DNS_RECORD_NAME || 'fd');
-      if (subdomain && subdomain.length >= 1 && subdomain.length <= 32 && /^[a-z0-9-]+$/.test(subdomain)) {
-        // The configured main entry is a public trial endpoint and does not
-        // require a registered user-domain row.
-        if (subdomain.toLowerCase() === publicEntry) {
-          const directProxy = parseDirectProxyTarget(url.pathname, url.search);
-          if (directProxy.matched) {
-            if (directProxy.error) return new Response(directProxy.error, { status: 400 });
-            return proxyDirectUrl(request, env, ctx, [directProxy.url], {
-              enableCache: true,
-              proxyPathPrefix: '',
-            });
-          }
-        }
+    const hostname = url.hostname.toLowerCase();
+    const { publicEntryDomain, userBaseDomain } = getDomainConfig(env);
 
-        if (env.DB && subdomain.toLowerCase() !== publicEntry) {
+    // BASE_DOMAIN itself is the public trial entry and does not require a
+    // registered user-domain row.
+    if (publicEntryDomain && hostname === publicEntryDomain) {
+      const directProxy = parseDirectProxyTarget(url.pathname, url.search);
+      if (directProxy.matched) {
+        if (directProxy.error) return new Response(directProxy.error, { status: 400 });
+        return proxyDirectUrl(request, env, ctx, [directProxy.url], {
+          enableCache: true,
+          proxyPathPrefix: '',
+        });
+      }
+    }
+
+    if (hostname !== publicEntryDomain && userBaseDomain && hostname.endsWith('.' + userBaseDomain) && hostname !== userBaseDomain) {
+      const subdomain = hostname.slice(0, hostname.length - ('.' + userBaseDomain).length);
+      if (subdomain && subdomain.length >= 1 && subdomain.length <= 32 && /^[a-z0-9-]+$/.test(subdomain)) {
+        if (env.DB) {
           const row = await env.DB.prepare("SELECT user_id, subdomain, preferred_host, remark, status FROM user_domains WHERE subdomain = ?").bind(subdomain).first();
           if (row && row.status === 'active') {
             const directProxy = parseDirectProxyTarget(url.pathname, url.search);

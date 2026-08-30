@@ -100,17 +100,16 @@ https://github.com/Dirige/EMBY_CF
 |---|:---:|---|---|
 | `CF_API_TOKEN` | ✅ | `你的 Cloudflare API Token` | 用于部署 Worker、创建 D1、配置 Worker 路由 |
 | `CF_ACCOUNT_ID` | ✅ | `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` | Cloudflare 账户 ID |
-| `BASE_DOMAIN` | ✅ | `dirige.de5.net` | 用户子域名所在根域名 |
+| `BASE_DOMAIN` | ✅ | `fd.dirige.de5.net` | 完整公共入口；程序自动取其上一级作为用户子域名根域名 |
 | `CF_ZONE_ID` | ✅ | `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` | `BASE_DOMAIN` 所在 Zone ID |
 | `CF_DNS_API_TOKEN` | ✅ | `你的 DNS Token` | Worker 运行时自动创建和修改用户 DNS；不填则复用 `CF_API_TOKEN` |
 | `CF_WORKER_NAME` | ⚪ | `emby-proxy` | Worker 名称，不填默认 `emby-proxy` |
-| `DNS_RECORD_NAME` | ⚪ | `fd` | 主入口 DNS 记录名，不填默认 `fd` |
 
 > [!WARNING]
 > 不要创建空白 Secret；没用到的可选项可以不建。
 > `ADMIN_PASSWORD` 不建议放在仓库配置里，部署后到 Cloudflare Worker 控制台手动填。
 
-`fd.BASE_DOMAIN` 是默认公共试用入口，无需注册即可使用通用反代格式；如果设置了 `DNS_RECORD_NAME`，则公共入口会改为对应的子域名。
+`BASE_DOMAIN` 本身就是公共试用入口，无需注册即可使用通用反代格式。例如填写 `fd.dirige.de5.net`，访问入口就是 `fd.dirige.de5.net`；系统不会再拼接第二个 `fd`。
 
 ### 运行 Actions
 
@@ -129,11 +128,11 @@ https://github.com/Dirige/EMBY_CF
 |---|---|
 | 安装 Wrangler | 使用 Cloudflare Wrangler CLI 部署 |
 | 创建或复用 D1 | 默认数据库名 `emby-proxy-db` |
-| 更新 `wrangler.toml` | 写入 Worker 名称、根域名、Zone ID、D1 ID |
+| 更新 `wrangler.toml` | 写入 Worker 名称、完整公共入口、Zone ID、D1 ID |
 | 写入 DNS Token | 把 `CF_DNS_API_TOKEN` 写入 Worker Secret（未单独配置时复用部署 Token） |
 | 部署 Worker | 发布 `worker.js` |
-| 配置 Worker 路由 | 创建主入口路由和 `*.BASE_DOMAIN/*` 通配符路由 |
-| 创建 DNS 记录 | 为 `DNS_RECORD_NAME.BASE_DOMAIN` 创建 `CNAME` → `BASE_DOMAIN`（已开启橙云代理） |
+| 配置 Worker 路由 | 创建 `BASE_DOMAIN/*` 主入口路由和 `*.用户域名根/*` 通配符路由 |
+| 创建 DNS 记录 | 为 `BASE_DOMAIN` 创建或复用 DNS 记录 |
 
 ## 04 · Worker 变量与机密 <sub>VARIABLES</sub>
 
@@ -153,11 +152,10 @@ https://github.com/Dirige/EMBY_CF
 |---|---|:---:|:---:|---|
 | `ADMIN_USERNAME` | Variable（变量） | ✅ | ✅ 默认 `admin`（`wrangler.toml` 已内置） | 管理员用户名，可自行修改 |
 | `ADMIN_PASSWORD` | Secret（机密） | ✅ | ❌ 需手动填写 | 管理员密码 |
-| `BASE_DOMAIN` | Variable（变量） | ✅ | ✅ 由 workflow 写入 | 用户子域名根域名 |
+| `BASE_DOMAIN` | Variable（变量） | ✅ | ✅ 由 workflow 写入 | 完整公共入口，例如 `fd.dirige.de5.net` |
 | `CF_ZONE_ID` | Variable（变量） | ✅ | ✅ 由 workflow 写入 | Cloudflare Zone ID |
 | `CF_DNS_API_TOKEN` | Secret（机密） | ✅ | ✅ 由 workflow 写入 | 自动创建/修改 DNS |
 | `SESSION_SECRET` | Secret（机密） | ⚠️ 强烈建议 | ❌ 需手动填写 | 用户登录会话签名 |
-| `DNS_RECORD_NAME` | Variable（变量） | ⚪ | ✅ 默认 `fd` | 主入口记录名 |
 
 > [!IMPORTANT]
 > 不设置 `SESSION_SECRET` 时，会话签名会回退到源码中公开的固定密钥，**任何人都可以伪造管理员登录态**。请务必设置一个随机长字符串，例如 `openssl rand -hex 32` 的输出。
@@ -210,7 +208,7 @@ wrangler d1 export emby-proxy-db --remote --output backup.sql
 
 ## 06 · DNS 与 Worker 路由 <sub>ROUTES</sub>
 
-用户注册后会自动生成三级子域名，例如：
+假设 `BASE_DOMAIN` 填写为 `fd.dirige.de5.net`，用户注册后会自动生成三级子域名，例如：
 
 ```text
 111.dirige.de5.net
@@ -219,7 +217,8 @@ wrangler d1 export emby-proxy-db --remote --output backup.sql
 因此必须配置通配符 Worker 路由：
 
 ```text
-*.BASE_DOMAIN/*
+fd.dirige.de5.net/*
+*.dirige.de5.net/*
 ```
 
 例如：
@@ -235,17 +234,10 @@ wrangler d1 export emby-proxy-db --remote --output backup.sql
 3. 点击 `Triggers（触发器）`。
 4. 找到 `Routes（路由）`。
 5. 点击 `Add route（添加路由）`。
-6. 填写 `*.你的根域名/*`。
+6. 填写 `BASE_DOMAIN/*` 和 `*.用户域名根/*`。
 7. 选择当前 Worker，点击 `Save（保存）`。
 
-建议同时添加主入口路由：
-
-```text
-emby.dirige.de5.net/*
-```
-
-> [!NOTE]
-> 如果在 GitHub Secrets 里设置了 `DNS_RECORD_NAME`，这里的 `emby` 换成你的记录名。使用 Actions 部署时，主入口路由和通配符路由都会自动创建，无需手动重复添加。
+使用 Actions 部署时，主入口路由和通配符路由都会自动创建，无需手动重复添加。
 
 ## 07 · 首次使用 <sub>FIRST RUN</sub>
 
@@ -285,7 +277,7 @@ https://你的入口域名/register
 
 1. 创建用户账号。
 2. 标记邀请码为已使用。
-3. 创建 `用户名.BASE_DOMAIN` 的 DNS 记录，默认指向 `youxuan.cf.090227.xyz`。
+3. 创建 `用户名.用户域名根` 的 DNS 记录，默认指向 `youxuan.cf.090227.xyz`。
 
 > [!NOTE]
 > 如果后续某一步失败，系统会回滚用户和邀请码，避免注册失败还占用邀请码。
@@ -296,7 +288,7 @@ https://你的入口域名/register
 
 ### 我的访问域名
 
-这里管理用户自己的三级子域名，例如 `111.dirige.de5.net`。
+这里管理用户自己的三级子域名，例如 `111.dirige.de5.net`。其中 `dirige.de5.net` 来自 `BASE_DOMAIN=fd.dirige.de5.net` 的上一级域名。
 
 点击「修改目标」后，可以填写「优选域名 / IP」。系统会自动判断输入内容：
 
@@ -376,7 +368,19 @@ RESET DATABASE
 - 保留 D1 数据库实例
 - 保留 Worker 环境变量和机密
 
-## 10 · 手动部署 worker.js <sub>MANUAL DEPLOY</sub>
+## 10 · 版本选择与手动部署 <sub>VERSIONS</sub>
+
+### 多用户版
+
+使用仓库根目录的 `worker.js`。该版本支持用户注册、邀请码、用户子域名和用户独立路由。
+
+### 自用部署单用户版
+
+使用 `single-user/worker.js`。该版本用于个人自用部署，不需要向他人发放邀请码。部署步骤与多用户版相同，但将控制台中的代码替换为 `single-user/worker.js`。
+
+`single-user/worker.js` 中没有提交同步密钥。只有启用主从同步时，才需要在 Worker Secret 中添加 `SYNC_SECRET`。
+
+### 手动部署 Worker
 
 如果不用 GitHub Actions，也可以手动部署：
 
@@ -423,7 +427,7 @@ wrangler tail
 | 注册失败：DNS 自动配置未完成 | 缺少 `CF_ZONE_ID` 或 `CF_DNS_API_TOKEN` | 检查 Worker 变量和机密 |
 | 注册失败：优选目标必须是合法域名或 IP | 目标带了路径、端口或非法字符 | 只填纯域名、IPv4 或 IPv6 |
 | 注册失败但邀请码被占用 | 线上不是最新版本 | 重新运行 `Actions（操作）` → `Deploy to Cloudflare Workers` |
-| 用户子域名 404 | 没有通配符路由 | 添加 `*.BASE_DOMAIN/*` Worker 路由 |
+| 用户子域名 404 | 没有通配符路由或 DNS 记录 | 添加 `*.用户域名根/*` Worker 路由，并确认用户 DNS 已创建 |
 | 用户路由访问到管理员全局路由 | 用户没有创建同名路径 | 到用户后台「我的路由」添加对应 prefix |
 | D1 表为空或结构异常 | 初始化中断或旧结构残留 | 管理员后台执行「重置数据库」 |
 | 优选域名测速结果重复 | 浏览器或 D1 缓存仍在 | 点击重新测速，必要时重置测速缓存或等待缓存过期 |

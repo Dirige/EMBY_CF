@@ -65,12 +65,6 @@ jobs:
             echo "✅ CF_DNS_API_TOKEN"
           fi
           
-          if [ -z "${{ secrets.DNS_RECORD_NAME }}" ]; then
-            echo "⚪ DNS_RECORD_NAME - DNS记录名称 (可选，默认: fd)"
-          else
-            echo "✅ DNS_RECORD_NAME = ${{ secrets.DNS_RECORD_NAME }}"
-          fi
-          
           echo ""
           if [ "$MISSING" = "true" ]; then
             echo "❌ 缺少必需的变量！请在 GitHub 仓库设置中添加以上标记为 ❌ 的变量。"
@@ -148,11 +142,6 @@ jobs:
             echo "   CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}"
           fi
           
-          if [ -n "${{ secrets.DNS_RECORD_NAME }}" ]; then
-            sed -i "s|DNS_RECORD_NAME = \"fd\"|DNS_RECORD_NAME = \"${{ secrets.DNS_RECORD_NAME }}\"|g" wrangler.toml
-            echo "   DNS_RECORD_NAME: ${{ secrets.DNS_RECORD_NAME }}"
-          fi
-          
           if [ -n "${{ steps.get-db-id.outputs.DATABASE_ID }}" ]; then
             sed -i "s|database_id = \"5f966506-c2c9-46b0-8f85-9c6ba639c568\"|database_id = \"${{ steps.get-db-id.outputs.DATABASE_ID }}\"|g" wrangler.toml
             echo "   DATABASE_ID: ${{ steps.get-db-id.outputs.DATABASE_ID }}"
@@ -188,7 +177,6 @@ jobs:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CF_WORKER_NAME: ${{ secrets.CF_WORKER_NAME }}
           BASE_DOMAIN: ${{ secrets.BASE_DOMAIN }}
-          DNS_RECORD_NAME: ${{ secrets.DNS_RECORD_NAME }}
         run: |
           echo "🌐 配置 Worker 路由..."
 
@@ -196,12 +184,15 @@ jobs:
             CF_WORKER_NAME="emby-proxy"
           fi
 
-          if [ -z "$DNS_RECORD_NAME" ]; then
-            DNS_RECORD_NAME="fd"
+          PUBLIC_ENTRY_DOMAIN="$BASE_DOMAIN"
+          USER_BASE_DOMAIN="${BASE_DOMAIN#*.}"
+          if [ "$PUBLIC_ENTRY_DOMAIN" = "$USER_BASE_DOMAIN" ] || [ -z "$USER_BASE_DOMAIN" ]; then
+            echo "❌ BASE_DOMAIN 必须填写完整公共入口，例如 fd.example.com"
+            exit 1
           fi
 
-          ROUTE_PATTERN="${DNS_RECORD_NAME}.${BASE_DOMAIN}/*"
-          WILDCARD_ROUTE_PATTERN="*.${BASE_DOMAIN}/*"
+          ROUTE_PATTERN="${PUBLIC_ENTRY_DOMAIN}/*"
+          WILDCARD_ROUTE_PATTERN="*.${USER_BASE_DOMAIN}/*"
 
           echo "   路由模式: $ROUTE_PATTERN"
           echo "   Worker 名称: $CF_WORKER_NAME"
@@ -245,19 +236,19 @@ jobs:
           CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           BASE_DOMAIN: ${{ secrets.BASE_DOMAIN }}
-          DNS_RECORD_NAME: ${{ secrets.DNS_RECORD_NAME }}
         run: |
           echo "📝 创建 DNS 记录..."
 
-          if [ -z "$DNS_RECORD_NAME" ]; then
-            DNS_RECORD_NAME="fd"
+          FULL_RECORD_NAME="$BASE_DOMAIN"
+          TARGET_DOMAIN="${BASE_DOMAIN#*.}"
+          if [ "$FULL_RECORD_NAME" = "$TARGET_DOMAIN" ] || [ -z "$TARGET_DOMAIN" ]; then
+            echo "❌ BASE_DOMAIN 必须填写完整公共入口，例如 fd.example.com"
+            exit 1
           fi
-
-          FULL_RECORD_NAME="$DNS_RECORD_NAME.$BASE_DOMAIN"
 
           echo "   DNS 记录: $FULL_RECORD_NAME"
 
-          EXISTING_DNS=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records?type=CNAME&name=$FULL_RECORD_NAME" \
+          EXISTING_DNS=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records?name=$FULL_RECORD_NAME&per_page=100" \
             -H "Authorization: Bearer $CF_API_TOKEN" \
             -H "Content-Type: application/json")
 
@@ -267,7 +258,7 @@ jobs:
             CREATE_RESPONSE=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records" \
               -H "Authorization: Bearer $CF_API_TOKEN" \
               -H "Content-Type: application/json" \
-              -d "{\"type\":\"CNAME\",\"name\":\"$DNS_RECORD_NAME\",\"content\":\"$BASE_DOMAIN\",\"ttl\":1,\"proxied\":true}")
+              -d "{\"type\":\"CNAME\",\"name\":\"$FULL_RECORD_NAME\",\"content\":\"$TARGET_DOMAIN\",\"ttl\":1,\"proxied\":true}")
 
             if echo "$CREATE_RESPONSE" | grep -qE '"success"\s*:\s*true'; then
               echo "✅ DNS 记录 $FULL_RECORD_NAME 创建成功"
