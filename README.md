@@ -1,168 +1,154 @@
-# EMBY_CF | Cloudflare Worker Emby Proxy
+# EMBY_CF
 
-> 中文：运行在 Cloudflare Workers 上的 Emby 反向代理、优选入口、多用户子域名和路由管理面板。
-> English: An Emby reverse proxy on Cloudflare Workers with optimized DNS entry, per-user subdomains, invite registration, and route management.
+一个运行在 Cloudflare Workers 上的 Emby 反向代理与多用户路由面板。项目集成了 D1 数据库、邀请码注册、用户子域名、自动 DNS、优选域名测速、路由线路测速和基础播放统计。
 
-## CONTROL SURFACE | 功能概览
+界面风格偏向深色控制台，文档也按“先部署、再配置、再使用、最后排错”的顺序组织。涉及 GitHub 或 Cloudflare 控制台操作的地方，会保留英文按钮名并加中文对照，例如 `Settings（设置）`、`Actions（操作）`、`Variables and Secrets（变量和机密）`，方便按页面查找。
 
-| 模块 | 中文说明 | English |
-|---|---|---|
-| Emby Proxy | 通过 Worker 代理 Emby 服务，支持 HTTP、HTTPS 和 WebSocket | Proxy Emby traffic through Cloudflare Workers with HTTP, HTTPS, and WebSocket support |
-| Route Console | 管理员维护全局路由，用户维护自己子域名下的路由 | Admins manage global routes; users manage routes under their own subdomains |
-| User Subdomain | 注册用户自动获得 `username.BASE_DOMAIN` 访问域名 | Registered users automatically get `username.BASE_DOMAIN` |
-| Auto DNS | 域名目标自动创建 `CNAME`，IPv4 自动创建 `A`，IPv6 自动创建 `AAAA` | Domain targets create `CNAME`; IPv4 creates `A`; IPv6 creates `AAAA` |
-| Invite Codes | 管理员生成、释放邀请码；释放时同步清理普通用户、域名、DNS 和用户路由 | Admins generate/release invite codes; release also removes normal user, domain, DNS, and user routes |
-| D1 Storage | 用户、邀请码、路由、测速缓存和统计都存储在 D1 | Users, invites, routes, speed cache, and stats are stored in D1 |
-| Latency Scan | 支持优选域名测速和路由线路测速 | Optimized domain scan and route target latency scan |
-| Database Reset | 管理后台可删除并重建业务表，不删除 D1 实例 | Admin panel can drop and recreate app tables without deleting the D1 instance |
+## 功能特性
 
-## ROUTING MODEL | 路由模型
+| 功能 | 说明 |
+|---|---|
+| Emby 反向代理 | 支持 HTTP、HTTPS、WebSocket，适用于 Emby/Jellyfin 类服务代理 |
+| 管理员全局路由 | 管理员可在后台创建公共路由，例如 `/emby` |
+| 用户独立路由 | 每个用户可在自己的子域名下创建路由，不同用户可以使用同名路径 |
+| 邀请码注册 | 管理员生成邀请码，用户凭邀请码注册 |
+| 用户子域名 | 注册后自动创建 `用户名.根域名` |
+| 自动 DNS | 自动识别域名、IPv4、IPv6，并创建 `CNAME`、`A`、`AAAA` 记录 |
+| 优选入口 | 用户可把自己的子域名指向优选域名或优选 IP |
+| 延迟测速 | 支持优选域名测速、路由目标线路测速，并缓存测速结果 |
+| 数据库维护 | 后台可重置业务表，重新初始化 D1 表结构 |
+| 统计记录 | 记录播放与 PlaybackInfo 请求，便于观察使用情况 |
 
-### Admin Global Route | 管理员全局路由
+## 路由模型
 
-管理员在后台创建的是全局路由，适合默认入口或公共服务。
+### 管理员全局路由
+
+管理员后台创建的路由属于全局路由，适合放公共入口或默认代理。
 
 ```text
-https://your-worker-domain.example.com/emby
-https://BASE_DOMAIN/emby
+https://你的主入口域名/emby
+https://你的 workers.dev 域名/emby
 ```
 
-English: Routes created by admins are global routes. They are used when the request is not under a registered user subdomain, or when a user subdomain does not have its own matching route.
+### 用户独立路由
 
-### User Scoped Route | 用户独立路由
+用户路由按用户子域名隔离。也就是说，同一个路径只要求在同一个用户账号内不重复，不要求全站唯一。
 
-用户路由按子域名隔离。同一个 `prefix` 可以被不同用户重复使用。
-
-| 用户 | 路由 prefix | 访问地址 | 使用的目标 |
+| 用户 | 用户路由 | 访问地址 | 实际目标 |
 |---|---|---|---|
-| `111` | `emby` | `https://111.dirige.de5.net/emby` | `111` 用户自己的 Emby |
-| `222` | `emby` | `https://222.dirige.de5.net/emby` | `222` 用户自己的 Emby |
+| `111` | `/emby` | `https://111.dirige.de5.net/emby` | 用户 `111` 自己配置的 Emby |
+| `222` | `/emby` | `https://222.dirige.de5.net/emby` | 用户 `222` 自己配置的 Emby |
 
-English: User routes are scoped by subdomain. Different users can use the same route prefix because the Worker resolves the target by `subdomain + prefix`.
+如果用户子域名下没有对应路径，Worker 会尝试回落到管理员全局路由。
 
-## DNS TARGET MODE | 优选域名 / IP
+## 用户子域名和 DNS
 
-用户注册后会自动创建：
+用户注册成功后，系统会自动创建：
 
 ```text
-username.BASE_DOMAIN -> youxuan.cf.090227.xyz
+用户名.BASE_DOMAIN
 ```
 
-用户后台可以修改“优选域名 / IP”。系统会自动识别目标类型：
+默认指向：
 
-| 输入内容 | DNS 记录类型 | 示例 |
+```text
+youxuan.cf.090227.xyz
+```
+
+用户可在后台的“我的访问域名”里修改“优选域名 / IP”。这里不需要手动选择 DNS 类型，系统会自动识别：
+
+| 用户输入 | 自动创建的 DNS 记录 | 示例 |
 |---|---|---|
 | 域名 | `CNAME` | `youxuan.example.com` |
 | IPv4 | `A` | `1.2.3.4` |
 | IPv6 | `AAAA` | `2606:4700:4700::1111` |
 
-更新时会先删除该子域名下旧的 `A/AAAA/CNAME` 记录，再创建新的记录。
+修改时会先删除该子域名下已有的 `A/AAAA/CNAME` 记录，再创建新的记录，避免同名记录冲突。
 
-English: The panel automatically detects whether the target is a domain, IPv4, or IPv6, then writes the correct DNS record type. Updating a target replaces existing A/AAAA/CNAME records for that user subdomain.
+## 后台入口
 
-## ACCESS FLOW | 使用流程
+| 入口 | 用途 |
+|---|---|
+| `/admin` | 管理员登录、路由管理、邀请码管理、数据库维护 |
+| `/register` | 用户注册 |
+| 用户登录后的 `/admin` | 普通用户控制台，管理自己的访问域名和路由 |
+| `/stats` | 查看基础统计 JSON |
+| `/health` | 查看 Worker 健康状态 |
 
-1. 管理员使用 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 登录 `/admin`。
-   Admin signs in at `/admin` with `ADMIN_USERNAME` and `ADMIN_PASSWORD`.
+## 必要配置
 
-2. 管理员生成邀请码。
-   Admin generates invite codes.
+这些值建议在 GitHub Secrets 或 Cloudflare Worker 的 `Variables and Secrets（变量和机密）` 中填写。不要在 `wrangler.toml` 里写空白密码。
 
-3. 用户访问 `/register`，使用邀请码注册。
-   User visits `/register` and signs up with an invite code.
-
-4. 注册成功后系统自动创建用户子域名 DNS，默认指向 `youxuan.cf.090227.xyz`。
-   After registration, the Worker creates a user subdomain DNS record pointing to `youxuan.cf.090227.xyz` by default.
-
-5. 用户在后台修改优选域名/IP，并创建自己的路由。
-   User updates optimized DNS target and creates personal routes.
-
-6. 用户访问 `https://username.BASE_DOMAIN/prefix` 使用自己的路由。
-   User accesses `https://username.BASE_DOMAIN/prefix` to use personal routes.
-
-## REQUIRED CONFIG | 必要配置
-
-这些值建议在 Cloudflare 控制台或 GitHub Actions Secrets 中填写，不建议把密码写进 `wrangler.toml`。
-
-| 名称 | 必需 | 中文说明 | English |
+| 名称 | 必需 | 建议位置 | 说明 |
 |---|---:|---|---|
-| `CF_API_TOKEN` | GitHub Actions 必需 | 部署 Worker、创建 D1、管理 Worker 路由 | Deploy Worker, create D1, manage Worker routes |
-| `CF_ACCOUNT_ID` | GitHub Actions 必需 | Cloudflare 账户 ID | Cloudflare account ID |
-| `BASE_DOMAIN` | 必需 | 用户子域名所在根域名，如 `dirige.de5.net` | Base domain for user subdomains |
-| `CF_ZONE_ID` | 必需 | 根域名所在 Zone ID | Zone ID for the base domain |
-| `CF_DNS_API_TOKEN` | 推荐 | 自动创建/修改用户 DNS；不填时 GitHub Actions 会尝试复用 `CF_API_TOKEN` | Token for automatic DNS changes |
-| `ADMIN_USERNAME` | 必需 | 管理员用户名 | Admin username |
-| `ADMIN_PASSWORD` | 必需 | 管理员密码，建议手动在 Cloudflare 控制台配置 | Admin password, preferably configured manually in Cloudflare dashboard |
-| `SESSION_SECRET` | 推荐 | 用户登录会话签名密钥 | Secret for user session signing |
-| `CF_WORKER_NAME` | 可选 | Worker 名称，默认 `emby-proxy` | Worker name, default `emby-proxy` |
-| `DNS_RECORD_NAME` | 可选 | 传统主入口记录名，默认 `emby` | Legacy/main entry record name, default `emby` |
+| `CF_API_TOKEN` | 是 | GitHub Secrets | 部署 Worker、创建 D1、配置 Worker 路由 |
+| `CF_ACCOUNT_ID` | 是 | GitHub Secrets | Cloudflare 账户 ID |
+| `BASE_DOMAIN` | 是 | GitHub Secrets / Worker Variable | 用户子域名根域名，例如 `dirige.de5.net` |
+| `CF_ZONE_ID` | 是 | GitHub Secrets / Worker Variable | `BASE_DOMAIN` 所在 Zone ID |
+| `CF_DNS_API_TOKEN` | 推荐 | GitHub Secrets / Worker Secret | Worker 运行时自动创建和修改 DNS |
+| `ADMIN_USERNAME` | 是 | Worker Variable | 管理员用户名 |
+| `ADMIN_PASSWORD` | 是 | Worker Secret | 管理员密码，建议部署后手动填写 |
+| `SESSION_SECRET` | 推荐 | Worker Secret | 用户登录会话签名密钥 |
+| `CF_WORKER_NAME` | 否 | GitHub Secrets | Worker 名称，默认 `emby-proxy` |
+| `DNS_RECORD_NAME` | 否 | GitHub Secrets / Worker Variable | 主入口 DNS 记录名，默认 `emby` |
 
-## DATABASE TABLES | D1 数据表
+## D1 数据表
 
-Worker 首次请求会自动初始化 D1 表结构；旧表也会自动补字段和迁移路由主键。
+Worker 首次请求会自动创建或迁移 D1 表结构。正常情况下不需要手动执行 SQL。
 
-| 表名 | 用途 |
+| 表名 | 存储内容 |
 |---|---|
 | `users` | 用户账号、密码哈希、角色、状态 |
 | `invite_codes` | 邀请码、使用状态、使用人、使用时间 |
-| `user_domains` | 用户子域名、优选目标、DNS 记录 ID 和记录类型 |
+| `user_domains` | 用户子域名、优选目标、DNS 记录 ID、记录类型 |
 | `routes` | 管理员全局路由和用户独立路由 |
 | `visitor_logs` | 播放信息请求访问日志 |
 | `request_stats` | 按路由和日期统计请求量 |
 | `auto_emby_daily_stats` | Emby 播放和 PlaybackInfo 日统计 |
 | `domain_speed_cache` | 优选域名测速缓存 |
-| `domain_best_cache` | 当前网络的最佳优选入口缓存 |
+| `domain_best_cache` | 当前网络下的最佳优选入口缓存 |
 
-English: D1 schema is initialized automatically on the first request. Existing route tables are migrated automatically to support per-user route isolation.
+管理员后台的“重置数据库”会删除并重建这些业务表，但不会删除 D1 数据库实例，也不会修改 Worker 环境变量。
 
-## QUICK DEPLOY | 快速部署
+## 快速部署
 
 推荐使用 GitHub Actions：
 
 1. Fork 本仓库。
-   Fork this repository.
+2. 在仓库进入 `Settings（设置） -> Secrets and variables（秘密和变量） -> Actions（操作）`。
+3. 添加必需的 GitHub Secrets。
+4. 进入 `Actions（操作） -> Deploy to Cloudflare Workers`，点击 `Run workflow（运行工作流）`。
+5. 部署成功后，到 Cloudflare 控制台进入 Worker，打开 `Settings（设置） -> Variables and Secrets（变量和机密）`，手动确认 `ADMIN_PASSWORD`、`ADMIN_USERNAME`、`CF_ZONE_ID`、`CF_DNS_API_TOKEN` 等变量。
 
-2. 在 GitHub 仓库设置中添加 Actions Secrets。
-   Add Actions Secrets in your GitHub repository settings.
+详细步骤见 [DEPLOY.md](DEPLOY.md)。
 
-3. 运行 `Deploy to Cloudflare Workers` 工作流。
-   Run the `Deploy to Cloudflare Workers` workflow.
-
-4. 到 Cloudflare Worker 控制台手动确认/填写 `ADMIN_PASSWORD`、`ADMIN_USERNAME`、`CF_ZONE_ID`、`CF_DNS_API_TOKEN` 等变量或 Secret。
-   Confirm or set `ADMIN_PASSWORD`, `ADMIN_USERNAME`, `CF_ZONE_ID`, `CF_DNS_API_TOKEN`, and related values in the Cloudflare Worker dashboard.
-
-完整步骤见 [DEPLOY.md](DEPLOY.md)。
-
-## LOCAL CHECKS | 本地检查
+## 本地检查
 
 ```bash
 node --check worker.js
 wrangler deploy --dry-run
 ```
 
-English: Use these commands to validate JavaScript syntax and Cloudflare Worker packaging before deployment.
-
-## TROUBLESHOOTING | 常见问题
+## 常见问题
 
 | 问题 | 处理方式 |
 |---|---|
+| 管理员密码部署后变空 | 不要在 `wrangler.toml` 写 `ADMIN_PASSWORD = ""`，在 Cloudflare 控制台手动填 Secret |
 | 注册失败：DNS 自动配置未完成 | 检查 `CF_ZONE_ID` 和 `CF_DNS_API_TOKEN` |
-| 注册失败：用户名已存在 | 释放对应邀请码会同步删除普通用户和用户域名；也可使用数据库重置 |
-| 注册失败但邀请码被占用 | 当前版本会在失败时回滚邀请码；请确认部署到最新提交 |
-| 用户路由访问 404 | 检查用户是否有该 `prefix`，以及 `*.BASE_DOMAIN/*` Worker 路由是否存在 |
-| 管理员密码部署后变空 | 不要在 `wrangler.toml` 写 `ADMIN_PASSWORD = ""`；在 Cloudflare 控制台手动填 |
-| 优选目标保存失败 | 只填写纯域名或 IP；不要带路径、端口、账号密码 |
+| 注册失败：优选目标必须是合法域名或 IP | 只填写纯域名、IPv4 或 IPv6，不要带路径、端口、账号密码 |
+| 用户注册成功但子域名访问 404 | 检查是否添加了 `*.BASE_DOMAIN/*` Worker 路由 |
+| 用户路由访问到全局路由 | 用户后台没有创建同名路径，系统回落到了管理员全局路由 |
+| 邀请码释放后用户名仍占用 | 确认已部署最新版本；释放邀请码会同步删除关联普通用户 |
+| D1 表结构异常 | 在管理员后台执行“重置数据库”重新初始化 |
 
-## DISCLAIMER | 声明
+## 声明
 
-中文：本项目仅用于学习、研究和自有服务代理测试。请遵守当地法律法规以及 Cloudflare 和上游服务条款，使用产生的一切后果由使用者自行承担。
+本项目仅用于学习、研究和自有服务代理测试。请遵守当地法律法规、Cloudflare 服务条款和上游服务条款。使用本项目产生的一切后果由使用者自行承担。
 
-English: This project is intended for learning, research, and proxying services you are authorized to operate. Follow local laws and the terms of Cloudflare and upstream services. You are responsible for your own usage.
-
-## COMMUNITY | 交流反馈
+## 交流反馈
 
 - Telegram: [https://t.me/Dirige_Proxy](https://t.me/Dirige_Proxy)
 
-## LICENSE | 许可证
+## 许可证
 
 MIT License

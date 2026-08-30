@@ -1,295 +1,250 @@
-# DEPLOY | Cloudflare Worker Emby Proxy
+# EMBY_CF 部署教程
 
-> 中文：这份文档按“准备 Cloudflare 资源 -> 配置 GitHub Secrets -> 自动部署 -> 手动补充 Worker 变量 -> 注册和路由验证”的顺序走。
-> English: This guide follows the flow: prepare Cloudflare resources, configure GitHub Secrets, deploy with GitHub Actions, fill Worker variables manually, then verify registration and routing.
+这是一份中文为主的部署教程。遇到 GitHub 或 Cloudflare 控制台按钮时，会使用 `英文（中文）` 的写法，例如 `Settings（设置）`、`Create Token（创建令牌）`，方便你按页面文字找到对应位置。
 
-## SYSTEM MAP | 系统结构
+## 一、功能说明
+
+EMBY_CF 是一个部署在 Cloudflare Workers 上的 Emby 反向代理和多用户路由面板，主要功能包括：
+
+- Emby/Jellyfin 类服务反向代理
+- WebSocket 代理
+- 管理员全局路由
+- 用户独立路由
+- 邀请码注册
+- 注册用户自动创建三级子域名
+- 用户可修改自己的优选域名或优选 IP
+- 自动识别 DNS 目标类型并创建 `CNAME`、`A` 或 `AAAA` 记录
+- 优选域名测速
+- 路由线路测速
+- D1 数据库存储用户、邀请码、路由、DNS、统计和测速缓存
+- 管理员后台重置数据库
+
+## 二、准备工作
+
+部署前需要准备：
+
+| 项目 | 说明 |
+|---|---|
+| Cloudflare 账号 | 用于运行 Worker、D1 和 DNS |
+| 已托管到 Cloudflare 的域名 | 用于用户子域名和 Worker 路由 |
+| GitHub 账号 | 用于 Fork 仓库和运行 GitHub Actions |
+| Cloudflare API Token | 用于自动部署、创建 D1、配置 Worker 路由 |
+| DNS 编辑权限 | 用于注册用户时自动创建或修改 DNS |
+
+如果还没有域名，可以先注册域名并把 DNS 托管到 Cloudflare。原教程提到的 DNSHE 地址：
 
 ```text
-User Browser
-  |
-  |  https://username.BASE_DOMAIN/prefix
-  v
-Cloudflare DNS
-  |
-  |  A / AAAA / CNAME, proxied
-  v
-Cloudflare Worker
-  |
-  |  D1: users, invites, routes, domains, stats, speed cache
-  v
-Your Emby Server
+https://my.dnshe.com/index.php?m=domain_hub
 ```
 
-English: DNS sends user traffic into the Worker. The Worker reads D1 to decide which route target to use, then proxies the request to your Emby server.
+邀请码：
 
-## BEFORE YOU START | 准备工作
+```text
+ZPB06CED7F
+```
 
-| 项目 | 中文说明 | English |
-|---|---|---|
-| Cloudflare Account | 需要一个可用的 Cloudflare 账号 | A Cloudflare account is required |
-| Domain Zone | 需要一个已经托管到 Cloudflare 的域名 Zone | A domain zone managed by Cloudflare is required |
-| GitHub Account | GitHub Actions 自动部署需要 | Required for GitHub Actions deployment |
-| API Token | 用于部署 Worker、创建 D1、配置 Worker 路由和 DNS | Used to deploy Worker, create D1, configure routes and DNS |
-| D1 Database | 可由 Actions 自动创建，也可以手动创建 | Can be created by Actions or manually |
+## 三、Cloudflare API Token
 
-如果你还没有域名，可以先把域名 DNS 托管到 Cloudflare。原文档提到的 DNSHE 地址为 `https://my.dnshe.com/index.php?m=domain_hub`，邀请码 `ZPB06CED7F`。
+### 1. 创建部署 Token
 
-English: If you do not have a domain yet, add one to Cloudflare first. Any domain managed by Cloudflare works as long as you can edit its DNS and Worker routes.
+1. 登录 [Cloudflare 控制台](https://dash.cloudflare.com/)。
+2. 点击右上角头像。
+3. 进入 `My Profile（我的个人资料）`。
+4. 点击 `API Tokens（API 令牌）`。
+5. 点击 `Create Token（创建令牌）`。
+6. 可以选择 `Edit Cloudflare Workers（编辑 Cloudflare Workers）` 模板，也可以自定义权限。
 
-## TOKEN PERMISSIONS | API 令牌权限
+建议部署 Token 至少包含：
 
-建议创建两个令牌：
+| 权限范围 | 权限 |
+|---|---|
+| Account | `Workers Scripts:Edit` |
+| Account | `D1:Edit` |
+| Zone | `Workers Routes:Edit` |
+| Zone | `DNS:Edit` |
 
-| 令牌 | 用途 | 建议权限 |
-|---|---|---|
-| `CF_API_TOKEN` | GitHub Actions 部署 Worker、创建/查询 D1、创建 Worker 路由 | Workers Scripts Edit, D1 Edit, Zone Workers Routes Edit, Zone DNS Edit |
-| `CF_DNS_API_TOKEN` | Worker 运行时自动创建/更新用户子域名 DNS | Zone DNS Edit |
+如果你只想先简单部署，可以让一个 Token 同时负责部署和 DNS。更稳妥的方式是部署 Token 和 DNS Token 分开。
 
-如果只想先用一个令牌，也可以让 `CF_DNS_API_TOKEN` 留空，GitHub Actions 会尝试把 `CF_API_TOKEN` 写入 Worker Secret `CF_DNS_API_TOKEN`。更稳的做法是单独创建 DNS 编辑令牌。
+### 2. 创建 DNS Token
 
-English: A separate DNS token is safer. It limits runtime DNS operations to only the permission needed by user registration and user domain edits.
+DNS Token 用于 Worker 运行时自动给注册用户创建 DNS 记录。
 
-## GITHUB ACTIONS DEPLOY | GitHub 自动部署
+1. 仍然在 `API Tokens（API 令牌）` 页面。
+2. 点击 `Create Token（创建令牌）`。
+3. 选择自定义 Token。
+4. 给目标 Zone 添加 `DNS:Edit` 权限。
+5. Zone 范围选择你的根域名所在 Zone。
 
-### 1. Fork 仓库 | Fork Repository
+这个 Token 后面填到 `CF_DNS_API_TOKEN`。
 
-打开仓库：
+## 四、GitHub Actions 自动部署
+
+### 1. Fork 仓库
+
+打开项目仓库：
 
 ```text
 https://github.com/Dirige/EMBY_CF
 ```
 
-点击 `Fork`，创建到你自己的 GitHub 账号下。
+点击右上角 `Fork（复刻）`，把仓库复制到自己的 GitHub 账号。
 
-English: Fork the repository to your own GitHub account so GitHub Actions can run in your repo.
+### 2. 添加 GitHub Secrets
 
-### 2. 填写 GitHub Secrets | Add GitHub Actions Secrets
+进入你 Fork 后的仓库：
 
-进入你的仓库：
+1. 点击 `Settings（设置）`。
+2. 点击左侧 `Secrets and variables（秘密和变量）`。
+3. 点击 `Actions（操作）`。
+4. 点击 `New repository secret（新建仓库密钥）`。
+5. 按下表逐个添加。
 
-```text
-Settings -> Secrets and variables -> Actions -> New repository secret
-```
+| Secret 名称 | 必需 | 示例 | 说明 |
+|---|---:|---|---|
+| `CF_API_TOKEN` | 是 | `你的 Cloudflare API Token` | 用于部署 Worker、创建 D1、配置 Worker 路由 |
+| `CF_ACCOUNT_ID` | 是 | `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` | Cloudflare 账户 ID |
+| `BASE_DOMAIN` | 是 | `dirige.de5.net` | 用户子域名所在根域名 |
+| `CF_ZONE_ID` | 是 | `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` | `BASE_DOMAIN` 所在 Zone ID |
+| `CF_DNS_API_TOKEN` | 推荐 | `你的 DNS Token` | Worker 运行时自动创建和修改用户 DNS |
+| `CF_WORKER_NAME` | 否 | `emby-proxy` | Worker 名称，不填默认 `emby-proxy` |
+| `DNS_RECORD_NAME` | 否 | `emby` | 主入口 DNS 记录名，不填默认 `emby` |
 
-添加下面这些 Secrets：
+注意：
 
-| Secret 名称 | 必需 | 示例 | 中文说明 | English |
-|---|---:|---|---|---|
-| `CF_API_TOKEN` | 是 | `...` | Cloudflare API 令牌，用于部署 Worker、管理路由和 D1 | Cloudflare token for Worker deployment, routes, and D1 |
-| `CF_ACCOUNT_ID` | 是 | `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` | Cloudflare 账户 ID | Cloudflare account ID |
-| `BASE_DOMAIN` | 是 | `dirige.de5.net` | 用户子域名所在根域名 | Base domain for user subdomains |
-| `CF_ZONE_ID` | 是 | `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` | `BASE_DOMAIN` 所在 Zone ID | Zone ID for `BASE_DOMAIN` |
-| `CF_DNS_API_TOKEN` | 推荐 | `...` | Worker 运行时自动改 DNS 的令牌 | Runtime token for DNS updates |
-| `CF_WORKER_NAME` | 否 | `emby-proxy` | Worker 名称，不填则默认 `emby-proxy` | Worker name, default `emby-proxy` |
-| `DNS_RECORD_NAME` | 否 | `emby` | 传统主入口 DNS 记录名 | Legacy/main entry record name |
+- 不要创建空白 Secret。
+- 没用到的可选项可以不建。
+- `ADMIN_PASSWORD` 不建议放在仓库配置里，建议部署后到 Cloudflare Worker 控制台手动填。
 
-注意：不要在 GitHub Secrets 里填写空字符串；没用到的可选项可以不建。
+### 3. 运行 Actions
 
-English: Do not create empty GitHub secrets. Optional secrets can be omitted.
+1. 点击仓库顶部 `Actions（操作）`。
+2. 左侧选择 `Deploy to Cloudflare Workers`。
+3. 点击右侧 `Run workflow（运行工作流）`。
+4. 再点绿色的 `Run workflow（运行工作流）` 确认。
+5. 等待任务完成，状态显示绿色对勾即部署成功。
 
-### 3. 运行工作流 | Run Workflow
+工作流会自动完成：
 
-进入：
-
-```text
-Actions -> Deploy to Cloudflare Workers -> Run workflow
-```
-
-部署完成后，Actions 会做这些事：
-
-| 动作 | 中文说明 | English |
-|---|---|---|
-| 安装 Wrangler | 使用 Cloudflare Wrangler CLI | Install Wrangler CLI |
-| 创建/确认 D1 | 自动创建或复用 `emby-proxy-db` | Create or reuse `emby-proxy-db` |
-| 写入 wrangler 配置 | 替换 Worker 名称、域名、Zone ID、D1 ID | Update Worker config |
-| 写入 DNS Secret | 把 DNS API Token 写入 Worker Secret | Store DNS token as Worker Secret |
-| 部署 Worker | 发布 `worker.js` | Deploy `worker.js` |
-| 配置路由 | 添加主入口和 `*.BASE_DOMAIN/*` 通配符路由 | Add main and wildcard Worker routes |
-
-English: The workflow deploys the Worker and configures routing. D1 tables are initialized by the Worker on the first request.
-
-## CLOUDFLARE WORKER VARIABLES | Worker 变量和机密
-
-自动部署后，建议进入 Cloudflare 控制台核对变量：
-
-```text
-Workers & Pages -> emby-proxy -> Settings -> Variables and Secrets
-```
-
-手动挨个确认或填写：
-
-| 名称 | 类型 | 必需 | 示例 | 中文说明 |
-|---|---|---:|---|---|
-| `ADMIN_USERNAME` | Variable | 是 | `admin` | 管理员用户名 |
-| `ADMIN_PASSWORD` | Secret | 是 | 自己设置 | 管理员密码 |
-| `BASE_DOMAIN` | Variable | 是 | `dirige.de5.net` | 用户子域名根域名 |
-| `CF_ZONE_ID` | Variable 或 Secret | 是 | `xxxxxxxx...` | Cloudflare Zone ID |
-| `CF_DNS_API_TOKEN` | Secret | 是 | `...` | 自动创建/修改 DNS |
-| `SESSION_SECRET` | Secret | 推荐 | 随机长字符串 | 用户登录会话签名 |
-| `DNS_RECORD_NAME` | Variable | 否 | `emby` | 主入口记录名 |
-
-English:
-
-| Name | Type | Required | Example | Description |
-|---|---|---:|---|---|
-| `ADMIN_USERNAME` | Variable | Yes | `admin` | Admin username |
-| `ADMIN_PASSWORD` | Secret | Yes | your password | Admin password |
-| `BASE_DOMAIN` | Variable | Yes | `dirige.de5.net` | Base domain for user subdomains |
-| `CF_ZONE_ID` | Variable or Secret | Yes | `xxxxxxxx...` | Cloudflare Zone ID |
-| `CF_DNS_API_TOKEN` | Secret | Yes | `...` | DNS token for automatic updates |
-| `SESSION_SECRET` | Secret | Recommended | long random string | Session signing secret |
-| `DNS_RECORD_NAME` | Variable | Optional | `emby` | Main entry record name |
-
-`wrangler.toml` 不再包含 `ADMIN_PASSWORD = ""`。这样部署时不会把管理员密码覆盖成空白。
-
-English: `wrangler.toml` intentionally does not contain `ADMIN_PASSWORD = ""`, so deployment will not overwrite the admin password with an empty value.
-
-## DNS AND ROUTES | DNS 与 Worker 路由
-
-必须存在通配符 Worker 路由：
-
-```text
-*.BASE_DOMAIN/*
-```
-
-例如：
-
-```text
-*.dirige.de5.net/*
-```
-
-建议也保留主入口：
-
-```text
-DNS_RECORD_NAME.BASE_DOMAIN/*
-```
-
-例如：
-
-```text
-emby.dirige.de5.net/*
-```
-
-English: The wildcard Worker route is required for user subdomains such as `alice.dirige.de5.net`. The main route is useful for admin/global routes.
-
-## D1 DATABASE | D1 数据库
-
-### 自动初始化 | Automatic Initialization
-
-Worker 首次收到请求时会自动创建业务表：
-
-| 表名 | 存储内容 |
+| 步骤 | 说明 |
 |---|---|
-| `users` | 用户、密码哈希、角色、状态 |
+| 安装 Wrangler | 使用 Cloudflare Wrangler CLI 部署 |
+| 创建或复用 D1 | 默认数据库名 `emby-proxy-db` |
+| 更新 `wrangler.toml` | 写入 Worker 名称、根域名、Zone ID、D1 ID |
+| 写入 DNS Token | 把 `CF_DNS_API_TOKEN` 写入 Worker Secret |
+| 部署 Worker | 发布 `worker.js` |
+| 配置 Worker 路由 | 创建主入口路由和 `*.BASE_DOMAIN/*` 通配符路由 |
+
+## 五、Cloudflare Worker 变量和机密
+
+自动部署完成后，建议手动检查 Worker 变量。
+
+进入 Cloudflare：
+
+1. 打开 `Workers & Pages（Workers 和 Pages）`。
+2. 点击你的 Worker，例如 `emby-proxy`。
+3. 点击 `Settings（设置）`。
+4. 点击 `Variables and Secrets（变量和机密）`。
+5. 点击 `Add variable（添加变量）` 或 `Add secret（添加机密）`。
+
+建议按下表填写：
+
+| 名称 | 类型 | 必需 | 示例 | 说明 |
+|---|---|---:|---|---|
+| `ADMIN_USERNAME` | Variable（变量） | 是 | `admin` | 管理员用户名 |
+| `ADMIN_PASSWORD` | Secret（机密） | 是 | 自己设置 | 管理员密码 |
+| `BASE_DOMAIN` | Variable（变量） | 是 | `dirige.de5.net` | 用户子域名根域名 |
+| `CF_ZONE_ID` | Variable（变量）或 Secret（机密） | 是 | `xxxxxxxx...` | Cloudflare Zone ID |
+| `CF_DNS_API_TOKEN` | Secret（机密） | 是 | DNS Token | 自动创建/修改 DNS |
+| `SESSION_SECRET` | Secret（机密） | 推荐 | 随机长字符串 | 用户登录会话签名 |
+| `DNS_RECORD_NAME` | Variable（变量） | 否 | `emby` | 主入口记录名 |
+
+`wrangler.toml` 里不要写：
+
+```toml
+ADMIN_PASSWORD = ""
+```
+
+否则部署后可能把控制台里的管理员密码覆盖成空值。当前仓库已经移除了这行。
+
+## 六、D1 数据库
+
+### 自动创建和初始化
+
+GitHub Actions 会自动创建或复用 D1 数据库。Worker 第一次收到请求时，会自动创建业务表，不需要你手动执行 SQL。
+
+业务表包括：
+
+| 表名 | 用途 |
+|---|---|
+| `users` | 用户账号、密码哈希、角色、状态 |
 | `invite_codes` | 邀请码、使用状态、使用人、使用时间 |
-| `user_domains` | 用户子域名、优选目标、DNS 记录信息 |
+| `user_domains` | 用户子域名、优选目标、DNS 记录 ID、记录类型 |
 | `routes` | 管理员全局路由和用户独立路由 |
 | `visitor_logs` | 访问日志 |
-| `request_stats` | 按日期统计的路由请求 |
+| `request_stats` | 路由请求统计 |
 | `auto_emby_daily_stats` | 播放和 PlaybackInfo 日统计 |
 | `domain_speed_cache` | 优选域名测速缓存 |
 | `domain_best_cache` | 当前网络最佳优选入口缓存 |
 
-English: Tables are created automatically. Existing route tables are migrated automatically to support per-user route isolation.
+### 手动绑定 D1
 
-### 重置数据库 | Reset Database
+如果你手动部署 Worker：
 
-管理员后台的“重置数据库”会：
+1. 在 Cloudflare 控制台进入 `Storage & databases（存储和数据库）`。
+2. 点击 `D1 SQL Database（D1 SQL 数据库）`。
+3. 点击 `Create database（创建数据库）`。
+4. 输入数据库名称，例如 `emby-proxy-db`。
+5. 回到 Worker 页面。
+6. 点击 `Settings（设置）`。
+7. 点击 `Bindings（绑定）`。
+8. 点击 `Add binding（添加绑定）`。
+9. 类型选择 `D1 database（D1 数据库）`。
+10. 变量名填写 `DB`。
+11. 选择刚创建的 D1 数据库。
+12. 点击 `Save（保存）`。
 
-1. 删除本 Worker 管理的 9 张业务表。
-   Drop the 9 application tables managed by this Worker.
+## 七、DNS 和 Worker 路由
 
-2. 重新创建最新结构。
-   Recreate the latest schema.
-
-3. 尝试删除已记录用户子域名的 DNS 记录。
-   Try to remove DNS records for recorded user subdomains.
-
-4. 保留 D1 数据库实例和 Worker 环境变量。
-   Keep the D1 instance and Worker variables/secrets.
-
-## MANUAL DEPLOY | 手动部署
-
-### 1. 创建 Worker | Create Worker
-
-1. 打开 Cloudflare 控制台。
-   Open Cloudflare Dashboard.
-
-2. 进入 `Workers & Pages`。
-   Go to `Workers & Pages`.
-
-3. 创建一个 Worker，例如 `emby-proxy`。
-   Create a Worker, for example `emby-proxy`.
-
-4. 删除默认代码，粘贴 `worker.js`。
-   Remove default code and paste `worker.js`.
-
-5. 保存并部署。
-   Save and deploy.
-
-### 2. 创建并绑定 D1 | Create and Bind D1
-
-1. 进入 `Storage & databases -> D1`。
-   Go to `Storage & databases -> D1`.
-
-2. 创建数据库，例如 `emby-proxy-db`。
-   Create a database, for example `emby-proxy-db`.
-
-3. 回到 Worker 设置，添加 D1 binding。
-   Go back to Worker settings and add a D1 binding.
-
-4. 变量名填写 `DB`。
-   Binding name must be `DB`.
-
-5. 选择刚创建的数据库并保存。
-   Select the D1 database and save.
-
-不需要手动执行 SQL，Worker 会在第一次请求时自动建表。
-
-English: You do not need to run SQL manually. The Worker initializes the schema on first request.
-
-### 3. 添加变量 | Add Variables
-
-按照上面的 `Worker 变量和机密` 表格添加变量。至少需要：
+用户注册后会自动生成三级子域名，例如：
 
 ```text
-ADMIN_USERNAME
-ADMIN_PASSWORD
-BASE_DOMAIN
-CF_ZONE_ID
-CF_DNS_API_TOKEN
+111.dirige.de5.net
 ```
 
-English: Add the required variables/secrets listed above.
-
-### 4. 添加 Worker 路由 | Add Worker Routes
-
-进入：
-
-```text
-Worker -> Settings -> Triggers -> Routes
-```
-
-添加：
+因此必须配置通配符 Worker 路由：
 
 ```text
 *.BASE_DOMAIN/*
-DNS_RECORD_NAME.BASE_DOMAIN/*
 ```
 
 例如：
 
 ```text
 *.dirige.de5.net/*
+```
+
+手动添加路线：
+
+1. 进入 Cloudflare 的 Worker 页面。
+2. 点击 `Settings（设置）`。
+3. 点击 `Triggers（触发器）`。
+4. 找到 `Routes（路由）`。
+5. 点击 `Add route（添加路由）`。
+6. 填写 `*.你的根域名/*`。
+7. 选择当前 Worker。
+8. 点击 `Save（保存）`。
+
+建议同时添加主入口路由：
+
+```text
 emby.dirige.de5.net/*
 ```
 
-English: The wildcard route is required for automatic user subdomains.
+如果你在 GitHub Secrets 里设置了 `DNS_RECORD_NAME`，这里的 `emby` 换成你的记录名。
 
-## FIRST RUN | 首次使用
+## 八、首次使用
 
-### 1. 管理员登录 | Admin Login
+### 1. 管理员登录
 
 打开：
 
@@ -297,172 +252,197 @@ English: The wildcard route is required for automatic user subdomains.
 https://你的入口域名/admin
 ```
 
-输入 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD`。
+输入你在 Worker 变量里设置的：
 
-English: Visit `/admin` and sign in with your admin credentials.
+```text
+ADMIN_USERNAME
+ADMIN_PASSWORD
+```
 
-### 2. 生成邀请码 | Generate Invite Codes
+### 2. 生成邀请码
 
-进入“邀请码管理”，生成邀请码给用户注册。
+进入管理员后台后，找到“邀请码管理”：
 
-English: Use the invite code panel to generate invite codes for users.
+1. 选择生成数量。
+2. 点击“生成邀请码”。
+3. 可以点击“复制未使用”发给用户。
 
-### 3. 用户注册 | User Registration
+### 3. 用户注册
 
-用户访问：
+用户打开：
 
 ```text
 https://你的入口域名/register
 ```
 
-注册成功后会自动创建：
+填写：
+
+| 字段 | 说明 |
+|---|---|
+| 用户名 | 会成为 DNS 子域名，例如 `111` -> `111.dirige.de5.net` |
+| 密码 | 用户登录密码 |
+| 邀请码 | 管理员发放的邀请码 |
+
+注册成功后，系统会自动：
+
+1. 创建用户账号。
+2. 标记邀请码为已使用。
+3. 创建 `用户名.BASE_DOMAIN` 的 DNS 记录。
+4. 默认指向 `youxuan.cf.090227.xyz`。
+
+如果后续某一步失败，系统会回滚用户和邀请码，避免注册失败还占用邀请码。
+
+## 九、用户后台
+
+用户注册或登录后进入 `/admin`，如果不是管理员，会显示用户控制台。
+
+### 我的访问域名
+
+这里管理用户自己的三级子域名，例如：
 
 ```text
-username.BASE_DOMAIN
+111.dirige.de5.net
 ```
 
-默认 DNS 目标为：
+点击“修改目标”后，可以填写“优选域名 / IP”。
 
-```text
-youxuan.cf.090227.xyz
-```
+系统会自动判断输入内容：
 
-English: A successful registration automatically creates a user subdomain pointing to the default optimized target.
-
-## USER PANEL | 用户后台
-
-用户登录后可以管理两块内容：
-
-| 区域 | 中文说明 | English |
+| 输入类型 | 自动 DNS 记录 | 示例 |
 |---|---|---|
-| 我的访问域名 | 修改 `username.BASE_DOMAIN` 的优选目标 | Update optimized target for `username.BASE_DOMAIN` |
-| 我的路由 | 创建、编辑、删除、测速自己的路由 | Create, edit, delete, and speed-test personal routes |
+| 域名 | `CNAME` | `youxuan.example.com` |
+| IPv4 | `A` | `1.2.3.4` |
+| IPv6 | `AAAA` | `2606:4700:4700::1111` |
 
-### 优选域名 / IP 自动识别
+保存时会先删除旧的 `A/AAAA/CNAME` 记录，再创建新记录。所以用户不用手动选择 A 记录还是 CNAME 记录。
 
-用户填写目标时只需要输入域名或 IP：
+注意：这里建议只填写纯域名或 IP，不要填写路径、端口、账号密码。例如：
 
-| 输入 | 自动记录类型 | 说明 |
-|---|---|---|
-| `youxuan.example.com` | `CNAME` | 指向优选域名 |
-| `1.2.3.4` | `A` | 指向 IPv4 |
-| `2606:4700:4700::1111` | `AAAA` | 指向 IPv6 |
+| 推荐 | 不推荐 |
+|---|---|
+| `youxuan.example.com` | `https://youxuan.example.com/path` |
+| `1.2.3.4` | `1.2.3.4:443` |
 
-系统会先删除该子域名下旧的 `A/AAAA/CNAME`，再创建新的记录。
+### 我的路由
 
-English: The Worker detects the target type and creates CNAME, A, or AAAA automatically. It replaces old A/AAAA/CNAME records during updates.
-
-### 用户路由示例 | User Route Example
-
-用户 `111` 创建：
+用户可以创建自己的路由，例如：
 
 ```text
-prefix: emby
-target: https://emby-a.example.com:8096
+路径 prefix: emby
+目标 target: https://emby.example.com:8096
 ```
 
-访问：
+访问地址：
 
 ```text
 https://111.dirige.de5.net/emby
 ```
 
-用户 `222` 也可以创建自己的 `/emby`：
+不同用户可以使用同一个路径：
 
-```text
-https://222.dirige.de5.net/emby
-```
-
-English: The same prefix can be reused by different users because route lookup is scoped by user subdomain.
-
-## ADMIN PANEL | 管理后台
-
-| 功能 | 中文说明 | English |
+| 用户 | 访问地址 | 实际走向 |
 |---|---|---|
-| 路由管理 | 创建全局路由，用于主入口或公共代理 | Manage global routes |
-| 优选域名测速 | 从 Worker 边缘测试内置优选入口延迟 | Test optimized domain latency from Worker edge |
-| 邀请码管理 | 生成、复制、释放邀请码 | Generate, copy, and release invite codes |
-| 数据库维护 | 重置业务表并重新初始化 | Reset and recreate app tables |
+| `111` | `https://111.dirige.de5.net/emby` | 用户 `111` 的目标 |
+| `222` | `https://222.dirige.de5.net/emby` | 用户 `222` 的目标 |
 
-释放邀请码时，如果邀请码已绑定普通用户，会同步删除：
+同一个用户自己的路径不能重复。
+
+## 十、管理员后台
+
+管理员后台包含：
+
+| 区域 | 功能 |
+|---|---|
+| 路由管理 | 创建管理员全局路由 |
+| 优选域名测速 | 从 Worker 边缘测试内置优选入口 |
+| 邀请码管理 | 生成、复制、释放邀请码 |
+| 数据库维护 | 删除并重建业务表 |
+
+### 释放邀请码
+
+点击“释放”后，如果该邀请码绑定了普通用户，会同步删除：
+
+- 该普通用户
+- 该用户的访问域名记录
+- 该用户创建的路由
+- 该用户子域名的 DNS 记录
+
+管理员账号不会被释放邀请码删除。
+
+### 重置数据库
+
+点击“重置数据库”后，需要输入确认文本：
 
 ```text
-users
-user_domains
-routes owned by that user
-DNS records for username.BASE_DOMAIN
+RESET DATABASE
 ```
 
-English: Releasing an invite also releases the normal user and their related data.
+确认后会：
 
-## LOCAL DEVELOPMENT | 本地检查
+- 删除本 Worker 管理的 9 张业务表
+- 重新创建最新表结构
+- 尝试清理已记录用户子域名的 DNS
+- 保留 D1 数据库实例
+- 保留 Worker 环境变量和机密
 
-推荐检查：
+## 十一、手动部署 worker.js
+
+如果不用 GitHub Actions，也可以手动部署：
+
+1. 登录 Cloudflare 控制台。
+2. 点击左侧 `Workers & Pages（Workers 和 Pages）`。
+3. 点击 `Create application（创建应用程序）`。
+4. 选择 `Create Worker（创建 Worker）`。
+5. 输入 Worker 名称，例如 `emby-proxy`。
+6. 点击 `Deploy（部署）`。
+7. 部署完成后点击 `Edit code（编辑代码）`。
+8. 删除默认代码。
+9. 粘贴 `worker.js` 全部内容。
+10. 点击 `Save and deploy（保存并部署）`。
+11. 按上文添加 D1 Binding、变量、机密和 Worker 路由。
+
+## 十二、本地检查
+
+如果本地安装了 Wrangler，可以在项目目录运行：
 
 ```bash
 node --check worker.js
 wrangler deploy --dry-run
 ```
 
-查看 Wrangler 登录状态：
+查看登录状态：
 
 ```bash
 wrangler whoami
 ```
 
-查看线上日志：
+查看线上实时日志：
 
 ```bash
 wrangler tail
 ```
 
-English: Run syntax and dry-run checks before deploying. Use `wrangler tail` to inspect live logs.
+## 十三、故障排查
 
-## TROUBLESHOOTING | 故障排查
-
-| 问题 | 可能原因 | 处理方式 |
+| 问题 | 常见原因 | 处理方式 |
 |---|---|---|
-| `/admin` 登录失败 | `ADMIN_PASSWORD` 未配置或被空值覆盖 | 在 Cloudflare Worker 控制台手动设置 `ADMIN_PASSWORD` Secret |
-| 注册失败：DNS 自动配置未完成 | 缺少 `CF_ZONE_ID` 或 `CF_DNS_API_TOKEN` | 检查 Worker 变量和 Secret |
-| 注册失败：优选目标必须是合法域名或 IP | DNS 目标带了路径、端口或非法字符 | 只填域名、IPv4 或 IPv6 |
-| 用户注册成功但子域名访问 404 | 缺少 `*.BASE_DOMAIN/*` Worker 路由 | 在 Worker Triggers 添加通配符路由 |
-| 用户路由访问到全局路由 | 用户没有创建同名 `prefix` | 在用户后台添加对应路由 |
-| 管理员路由看不到用户路由 | 这是设计行为 | 用户路由归用户面板管理，管理员路由是全局路由 |
-| D1 表结构异常 | 旧表结构残留或初始化中断 | 管理后台执行“重置数据库” |
-| 注册失败但邀请码被占用 | 运行的不是最新版本 | 确认 GitHub Actions 部署到最新提交 |
+| `/admin` 登录失败 | `ADMIN_PASSWORD` 未填或被空值覆盖 | 到 `Settings（设置） -> Variables and Secrets（变量和机密）` 手动添加 `ADMIN_PASSWORD` Secret |
+| 注册失败：DNS 自动配置未完成 | 缺少 `CF_ZONE_ID` 或 `CF_DNS_API_TOKEN` | 检查 Worker 变量和机密 |
+| 注册失败：优选目标必须是合法域名或 IP | 目标带了路径、端口或非法字符 | 只填纯域名、IPv4 或 IPv6 |
+| 注册失败但邀请码被占用 | 线上不是最新版本 | 重新运行 `Actions（操作） -> Deploy to Cloudflare Workers` |
+| 用户子域名 404 | 没有通配符路由 | 添加 `*.BASE_DOMAIN/*` Worker 路由 |
+| 用户路由访问到管理员全局路由 | 用户没有创建同名路径 | 到用户后台“我的路由”添加对应 prefix |
+| D1 表为空或结构异常 | 初始化中断或旧结构残留 | 管理员后台执行“重置数据库” |
+| 优选域名测速结果重复 | 浏览器或 D1 缓存仍在 | 点击重新测速，必要时重置测速缓存或等待缓存过期 |
 
-English:
+## 十四、安全建议
 
-| Issue | Likely Cause | Fix |
-|---|---|---|
-| `/admin` login fails | `ADMIN_PASSWORD` is missing or overwritten with empty value | Set `ADMIN_PASSWORD` manually as a Worker Secret |
-| Registration says DNS not configured | Missing `CF_ZONE_ID` or `CF_DNS_API_TOKEN` | Check Worker variables and secrets |
-| Invalid optimized target | Target includes path, port, or invalid characters | Enter only a domain, IPv4, or IPv6 |
-| User subdomain returns 404 | Missing wildcard Worker route | Add `*.BASE_DOMAIN/*` route |
-| User route falls back to global route | User does not have that prefix | Add the route in user panel |
-| Admin panel does not show user routes | By design | User routes are managed in user panels |
-| D1 schema error | Old schema or interrupted initialization | Use admin database reset |
-| Invite consumed after failed registration | Deployment is outdated | Deploy latest commit |
+- `ADMIN_PASSWORD`、`CF_DNS_API_TOKEN`、`SESSION_SECRET` 建议使用 Secret（机密）。
+- 不要把管理员密码写入仓库。
+- DNS Token 建议只授予目标 Zone 的 `DNS:Edit` 权限。
+- 定期备份 D1 数据。
+- 不要代理无权访问的服务。
 
-## SECURITY NOTES | 安全提示
+## 声明
 
-1. 不要把 `ADMIN_PASSWORD` 写入 `wrangler.toml`。
-   Do not write `ADMIN_PASSWORD` into `wrangler.toml`.
-
-2. 建议把 `ADMIN_PASSWORD`、`CF_DNS_API_TOKEN`、`SESSION_SECRET` 配置为 Secret。
-   Configure `ADMIN_PASSWORD`, `CF_DNS_API_TOKEN`, and `SESSION_SECRET` as Secrets.
-
-3. DNS Token 建议只给目标 Zone 的 DNS 编辑权限。
-   Limit DNS token permissions to DNS edit for the target Zone.
-
-4. 定期备份 D1 中的重要数据。
-   Back up important D1 data regularly.
-
-5. 合理使用 Worker 请求量，避免过度请求。
-   Use Worker requests responsibly.
-
-## DISCLAIMER | 声明
-
-中文：本工具仅用于学习、研究和自有服务代理测试。请勿用于违法用途。使用本工具产生的一切后果由使用者自行承担。
-
-English: This tool is for learning, research, and proxying services you are authorized to operate. Do not use it for illegal purposes. You are responsible for your own usage.
+本工具仅用于学习、研究和自有服务代理测试。请勿用于违法用途。使用本工具产生的一切后果由使用者自行承担。
