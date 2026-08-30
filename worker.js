@@ -1,4 +1,4 @@
-const CURRENT_VERSION = '3.2-multiuser';
+const CURRENT_VERSION = '3.3-multiuser-dns';
 
 const OPTIMIZED_DOMAINS = [
   { subdomain: '', domain: 'cf.090227.xyz', name: 'CF优选-090227' },
@@ -46,6 +46,8 @@ const CONFIG = {
   domainCacheTtlMs: 3600000,
 };
 
+const DEFAULT_PREFERRED_HOST = 'youxuan.cf.090227.xyz';
+
 const PIKPAK_DOMAINS = [
   'pikpak.com', 'pikpak.net', 'pikpak-cn.com', 'pikpakcdn.com', 'pikpakapi.com', 'pikpakdrive.com',
 ];
@@ -78,6 +80,108 @@ function getAdminCredUser(env) {
 function getAdminCredPass(env) {
   const p = String(env.ADMIN_PASSWORD ?? env.AdminPassword ?? '').trim();
   return p || null;
+}
+
+function getAdminUsers(env) {
+  return String(env.ADMIN_USERS || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+}
+
+function getBaseDomain(env) {
+  return String(env.BASE_DOMAIN || 'dirige.de5.net').trim().toLowerCase().replace(/\.+$/, '');
+}
+
+function isDnsLabel(value) {
+  return /^[a-z0-9](?:[a-z0-9-]{1,30}[a-z0-9])?$/.test(String(value || ''));
+}
+
+function isIpv4(value) {
+  const parts = String(value || '').split('.');
+  return parts.length === 4 && parts.every((part) => /^\d+$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
+}
+
+function isIpv6(value) {
+  return String(value || '').includes(':') && /^[0-9a-f:]+$/i.test(String(value || ''));
+}
+
+function normalizeDnsTarget(value) {
+  let target = String(value || '').trim();
+  if (!target) return null;
+  try {
+    if (/^https?:\/\//i.test(target)) target = new URL(target).hostname;
+  } catch (_) {
+    return null;
+  }
+  target = target.replace(/\.+$/, '').toLowerCase();
+  if (!target || /[/?#:@]/.test(target) || target.length > 253) return null;
+  if (isIpv4(target) || isIpv6(target)) return target;
+  const labels = target.split('.');
+  if (labels.length < 2 || labels.some((label) => !isDnsLabel(label))) return null;
+  return target;
+}
+
+function dnsRecordType(target) {
+  if (isIpv4(target)) return 'A';
+  if (isIpv6(target)) return 'AAAA';
+  return 'CNAME';
+}
+
+function getDnsConfig(env) {
+  return {
+    zoneId: String(env.CF_ZONE_ID || '').trim(),
+    token: String(env.CF_DNS_API_TOKEN || env.CF_API_TOKEN || '').trim(),
+  };
+}
+
+async function cloudflareDnsRequest(env, path, init = {}) {
+  const { zoneId, token } = getDnsConfig(env);
+  if (!zoneId || !token) throw new Error('DNS 未配置：请设置 CF_DNS_API_TOKEN 和 CF_ZONE_ID');
+  const headers = new Headers(init.headers || {});
+  headers.set('Authorization', `Bearer ${token}`);
+  headers.set('Content-Type', 'application/json');
+  const response = await fetch(`https://api.cloudflare.com/client/v4/zones/${zoneId}${path}`, { ...init, headers });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.success === false) {
+    const message = data.errors?.map((x) => x.message).join('; ') || `Cloudflare API HTTP ${response.status}`;
+    throw new Error(message);
+  }
+  return data;
+}
+
+async function listUserDnsRecords(env, fullName) {
+  const records = [];
+  for (const type of ['A', 'AAAA', 'CNAME']) {
+    const data = await cloudflareDnsRequest(env, `/dns_records?type=${type}&name=${encodeURIComponent(fullName)}&per_page=100`);
+    records.push(...(data.result || []));
+  }
+  return records;
+}
+
+async function deleteUserDnsRecords(env, subdomain) {
+  const fullName = `${subdomain}.${getBaseDomain(env)}`;
+  const records = await listUserDnsRecords(env, fullName);
+  for (const record of records) {
+    await cloudflareDnsRequest(env, `/dns_records/${record.id}`, { method: 'DELETE' });
+  }
+  return records.length;
+}
+
+async function replaceUserDnsRecord(env, subdomain, target) {
+  const normalizedTarget = normalizeDnsTarget(target);
+  if (!normalizedTarget) throw new Error('优选目标必须是合法域名或 IP');
+  const fullName = `${subdomain}.${getBaseDomain(env)}`;
+  await deleteUserDnsRecords(env, subdomain);
+  const type = dnsRecordType(normalizedTarget);
+  const data = await cloudflareDnsRequest(env, '/dns_records', {
+    method: 'POST',
+    body: JSON.stringify({
+      type,
+      name: fullName,
+      content: normalizedTarget,
+      ttl: 1,
+      proxied: true,
+    }),
+  });
+  return { host: normalizedTarget, type, name: fullName, recordId: data.result?.id || '' };
 }
 
 // 校验 admin_token cookie：匹配 ADMIN_PASSWORD
@@ -199,7 +303,7 @@ body{display:flex;align-items:center;justify-content:center;min-height:100vh;pad
 <div class="brand-mark" style="margin:0 auto 20px"></div>
 <h1 class="login-title">注册账号</h1>
 <p class="login-sub">New Account Registration</p>
-<input type="text" id="regUser" placeholder="用户名（3-32位字母数字下划线）" autocomplete="username" onkeydown="if(event.key==='Enter')doReg()">
+<input type="text" id="regUser" placeholder="用户名（3-32位小写字母、数字或连字符）" autocomplete="username" onkeydown="if(event.key==='Enter')doReg()">
 <input type="password" id="regPass" placeholder="密码（至少6位）" autocomplete="new-password" onkeydown="if(event.key==='Enter')doReg()">
 <input type="text" id="regCode" placeholder="邀请码（向管理员获取）" onkeydown="if(event.key==='Enter')doReg()">
 <p id="regErr" class="login-err"></p>
@@ -230,7 +334,8 @@ async function doReg(){
 </script></div></body></html>`;
 }
 
-function buildUserHtml(u) {
+function buildUserHtml(u, env) {
+  const baseDomain = getBaseDomain(env);
   return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>我的后台</title>${HEAD_LINK}<style>${PAGE_STYLE}</style></head><body>
 <div class="scanline"></div>
@@ -250,16 +355,14 @@ function buildUserHtml(u) {
   </div>
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:12px">
-      <h2 style="border:none;margin:0;padding:0;flex:1">我的子域名<span class="h2-en" style="float:none;margin-left:12px">SUBDOMAINS</span></h2>
-      <button class="btn" onclick="openModal('modalDomain')">添加</button>
+      <h2 style="border:none;margin:0;padding:0;flex:1">我的访问域名<span class="h2-en" style="float:none;margin-left:12px">MY DOMAIN</span></h2>
     </div>
-    <p class="muted" style="margin:0 0 14px">子域名形如 <code>xxx.dirige.de5.net</code>，访问时通过你绑定的优选IP入口提速（仅边缘路由优化，不改变来源身份）。</p>
+    <p class="muted" style="margin:0 0 14px">注册后自动生成 <code>${u.username}.${baseDomain}</code>，默认指向 <code>${DEFAULT_PREFERRED_HOST}</code>。你可以修改优选域名或 IP。</p>
     <div id="domainList" class="route-grid"><p class="muted">LOADING...</p></div>
   </div>
 </div>
 <div id="modalDomain" class="modal"><div class="modal-inner">
   <div class="modal-header"><h2 class="modal-title">添加子域名</h2><p class="modal-desc">绑定三级子域名到你的优选域名/IP</p></div>
-  <div class="form-group"><label>子域名前缀</label><input id="subInput" placeholder="例如 alice"></div>
   <div class="form-group"><label>优选域名 / IP</label><input id="hostInput" placeholder="例如 csgo.com 或 1.2.3.4"><p class="form-hint">填优选域名或具体 IP，用于边缘路由提速</p></div>
   <div class="form-group"><label>备注</label><input id="remarkInput" placeholder="可选"></div>
   <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal('modalDomain')">取消</button><button class="btn" onclick="saveDomain()">保存</button></div>
@@ -272,21 +375,16 @@ function showToast(msg){var t=document.getElementById('toast');if(!t){t=document
 async function loadDomains(){
   var r=await fetch('/api/user/domains');var d=await r.json();var box=document.getElementById('domainList');
   if(!d.domains||!d.domains.length){box.innerHTML='<div class="empty-state" style="grid-column:1/-1"><span class="empty-state-icon"></span><p class="empty-state-text">还没有子域名，点上方按钮添加</p></div>';return;}
-  box.innerHTML=d.domains.map(function(x){return '<div class="route-item"><div class="route-header"><div class="route-title"><h3 class="route-name">'+x.subdomain+'.dirige.de5.net</h3><span class="route-path">'+x.preferred_host+'</span></div><button class="btn-remove" onclick="delDomain(\\''+x.subdomain+'\\')" title="删除">✕</button></div><div class="route-meta">'+(x.remark?'<span class="meta-tag">'+x.remark+'</span>':'')+'<span class="meta-tag '+(x.status==='active'?'meta-tag-on':'meta-tag-warn')+'">'+(x.status==='active'?'ACTIVE':'DISABLED')+'</span></div></div>';}).join('');
+  box.innerHTML=d.domains.map(function(x){return '<div class="route-item"><div class="route-header"><div class="route-title"><h3 class="route-name">'+x.subdomain+'.${baseDomain}</h3><span class="route-path">'+x.preferred_host+'</span></div></div><div class="route-meta">'+(x.remark?'<span class="meta-tag">'+x.remark+'</span>':'')+'<span class="meta-tag '+(x.status==='active'?'meta-tag-on':'meta-tag-warn')+'">'+(x.status==='active'?'ACTIVE':'DISABLED')+'</span><button class="btn btn-sm btn-outline" onclick="editDomain(\\''+x.subdomain+'\\',\\''+x.preferred_host+'\\',\\''+(x.remark||'')+'\\')">修改目标</button></div></div>';}).join('');
 }
+function editDomain(sub,host,remark){document.getElementById('hostInput').value=host||'';document.getElementById('remarkInput').value=remark||'';openModal('modalDomain');}
 async function saveDomain(){
-  var sub=document.getElementById('subInput').value.trim().toLowerCase();
   var host=document.getElementById('hostInput').value.trim();
   var remark=document.getElementById('remarkInput').value.trim();
-  if(!sub||!host){showToast('请填写完整');return;}
-  var r=await fetch('/api/user/domains',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subdomain:sub,preferred_host:host,remark:remark})});
+  if(!host){showToast('请填写优选域名/IP');return;}
+  var r=await fetch('/api/user/domains',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({preferred_host:host,remark:remark})});
   var d=await r.json();
-  if(d.ok){closeModal('modalDomain');document.getElementById('subInput').value='';document.getElementById('hostInput').value='';document.getElementById('remarkInput').value='';loadDomains();showToast('已添加');}else{showToast(d.error||'失败');}
-}
-async function delDomain(sub){
-  if(!confirm('确定删除 '+sub+'.dirige.de5.net ?'))return;
-  var r=await fetch('/api/user/domains?subdomain='+encodeURIComponent(sub),{method:'DELETE'});var d=await r.json();
-  if(d.ok){loadDomains();showToast('已删除');}else{showToast(d.error||'失败');}
+  if(d.ok){closeModal('modalDomain');document.getElementById('hostInput').value='';document.getElementById('remarkInput').value='';loadDomains();showToast('DNS 记录已更新');}else{showToast(d.error||'失败');}
 }
 loadDomains();
 </script></div></body></html>`;
@@ -349,16 +447,22 @@ async function initDatabase(env) {
       preferred_host TEXT NOT NULL,
       remark TEXT DEFAULT '',
       status TEXT DEFAULT 'active',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      dns_record_id TEXT DEFAULT '',
+      dns_record_type TEXT DEFAULT '')`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS invite_codes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       code TEXT UNIQUE NOT NULL,
       status TEXT DEFAULT 'unused',
       used_by INTEGER DEFAULT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      used_at DATETIME DEFAULT NULL)`),
   ]);
   try { await env.DB.exec(`ALTER TABLE routes ADD COLUMN target_latencies TEXT DEFAULT ''`); } catch(e) {}
   try { await env.DB.exec(`ALTER TABLE routes ADD COLUMN compat_mode TEXT DEFAULT 'off'`); } catch(e) {}
+  try { await env.DB.exec(`ALTER TABLE invite_codes ADD COLUMN used_at DATETIME DEFAULT NULL`); } catch(e) {}
+  try { await env.DB.exec(`ALTER TABLE user_domains ADD COLUMN dns_record_id TEXT DEFAULT ''`); } catch(e) {}
+  try { await env.DB.exec(`ALTER TABLE user_domains ADD COLUMN dns_record_type TEXT DEFAULT ''`); } catch(e) {}
   dbReady = true;
 }
 
@@ -464,8 +568,17 @@ async function speedtestAllRoutes(env) {
 async function saveDomainSpeedCache(env, cacheKey, rows) {
   const now = Date.now();
   const expires = now + CONFIG.domainCacheTtlMs;
-  const stmts = [];
+  const unique = new Map();
   for (const r of rows) {
+    const host = optimizedHost(r);
+    if (host) unique.set(host, { ...r, host });
+  }
+  const cleanRows = [...unique.values()];
+  const stmts = [
+    env.DB.prepare('DELETE FROM domain_speed_cache WHERE cache_key = ?').bind(cacheKey),
+    env.DB.prepare('DELETE FROM domain_best_cache WHERE cache_key = ?').bind(cacheKey),
+  ];
+  for (const r of cleanRows) {
     stmts.push(env.DB.prepare(
       `INSERT INTO domain_speed_cache (cache_key, subdomain, domain, display_name, latency_ms, status, tested_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -473,10 +586,10 @@ async function saveDomainSpeedCache(env, cacheKey, rows) {
        latency_ms=excluded.latency_ms, status=excluded.status, tested_at=excluded.tested_at`
     ).bind(cacheKey, r.subdomain, r.domain, r.name || r.display_name, r.latency, r.status, now));
   }
-  const sorted = [...rows].filter((r) => r.latency >= 0).sort((a, b) => a.latency - b.latency);
+  const sorted = cleanRows.filter((r) => r.latency >= 0).sort((a, b) => a.latency - b.latency);
   const best = sorted[0];
   if (best) {
-    const host = `${best.subdomain}.${best.domain}`;
+    const host = optimizedHost(best);
     stmts.push(env.DB.prepare(
       `INSERT INTO domain_best_cache (cache_key, best_host, best_name, best_latency, tested_at, expires_at)
        VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(cache_key) DO UPDATE SET
@@ -497,13 +610,18 @@ async function loadDomainSpeedCache(env, cacheKey) {
     'SELECT subdomain, domain, display_name, latency_ms, status, tested_at FROM domain_speed_cache WHERE cache_key = ? ORDER BY latency_ms ASC'
   ).bind(cacheKey).all();
   if (!results?.length) return null;
+  const validHosts = new Set(OPTIMIZED_DOMAINS.map(optimizedHost));
+  const currentResults = results.filter((r) => validHosts.has(optimizedHost(r)));
+  if (!currentResults.length) return null;
+  const bestRow = currentResults.find((r) => optimizedHost(r) === best.best_host) ||
+    currentResults.find((r) => r.latency_ms >= 0);
   return {
     cached: true,
     cacheKey,
-    best: best.best_host,
-    bestName: best.best_name,
-    results: results.map((r) => ({
-      subdomain: r.subdomain, domain: r.domain, name: r.display_name, host: `${r.subdomain}.${r.domain}`,
+    best: bestRow ? optimizedHost(bestRow) : null,
+    bestName: bestRow ? bestRow.display_name : best.best_name,
+    results: currentResults.map((r) => ({
+      subdomain: r.subdomain, domain: r.domain, name: r.display_name, host: optimizedHost(r),
       latency: r.latency_ms, status: r.status,
     })),
     expiresAt: best.expires_at,
@@ -605,10 +723,27 @@ async function handleAdminApi(request, env, url) {
   }
 
   if (url.pathname === '/admin/api/invites' && request.method === 'GET') {
-    const codes = await env.DB.prepare("SELECT code, status, used_by, created_at FROM invite_codes ORDER BY id").all();
+    const codes = await env.DB.prepare(
+      `SELECT i.code, i.status, i.used_by, i.created_at, i.used_at,
+              u.username AS used_by_username
+       FROM invite_codes i
+       LEFT JOIN users u ON u.id = i.used_by
+       ORDER BY i.id`
+    ).all();
     const total = codes.results ? codes.results.length : 0;
     const used = codes.results ? codes.results.filter(c => c.status === 'used').length : 0;
     return json({ ok: true, total, used, remaining: total - used, codes: codes.results || [] });
+  }
+
+  if (url.pathname === '/admin/api/invites/release' && request.method === 'POST') {
+    const body = await request.json().catch(() => ({}));
+    const code = String(body.code || '').trim();
+    if (!code) return json({ error: '缺少邀请码' }, 400);
+    const result = await env.DB.prepare(
+      "UPDATE invite_codes SET status = 'unused', used_by = NULL, used_at = NULL WHERE code = ? AND status = 'used'"
+    ).bind(code).run();
+    if (!result.meta?.changes) return json({ error: '邀请码不存在或当前未使用' }, 404);
+    return json({ ok: true });
   }
 
   if (url.pathname === '/admin/api/invites/generate' && request.method === 'POST') {
@@ -621,6 +756,32 @@ async function handleAdminApi(request, env, url) {
     const stmt = env.DB.prepare("INSERT INTO invite_codes (code) VALUES (?)");
     await env.DB.batch([...codes.map(c => stmt.bind(c))]);
     return json({ ok: true, generated: count, codes });
+  }
+
+  if (url.pathname === '/admin/api/database/reset' && request.method === 'POST') {
+    const body = await request.json().catch(() => ({}));
+    if (body.confirmation !== 'RESET DATABASE') {
+      return json({ error: '请输入 RESET DATABASE 确认重置' }, 400);
+    }
+    const dnsWarnings = [];
+    const domainRows = await env.DB.prepare('SELECT subdomain FROM user_domains').all();
+    if (getDnsConfig(env).zoneId && getDnsConfig(env).token) {
+      for (const row of domainRows.results || []) {
+        try {
+          await deleteUserDnsRecords(env, row.subdomain);
+        } catch (e) {
+          dnsWarnings.push(`${row.subdomain}: ${e.message}`);
+        }
+      }
+    }
+    await env.DB.batch([
+      'routes', 'visitor_logs', 'request_stats', 'auto_emby_daily_stats',
+      'domain_speed_cache', 'domain_best_cache', 'user_domains', 'invite_codes', 'users',
+    ].map((table) => env.DB.prepare(`DELETE FROM ${table}`)));
+    try {
+      await env.DB.exec(`DELETE FROM sqlite_sequence WHERE name IN ('routes','visitor_logs','request_stats','auto_emby_daily_stats','domain_speed_cache','domain_best_cache','user_domains','invite_codes','users')`);
+    } catch (_) {}
+    return json({ ok: true, dnsWarnings });
   }
 
   return json({ error: 'Not found' }, 404);
@@ -1163,7 +1324,7 @@ function renderDomainTable(results, best) {
   if (!results.length) { wrap.innerHTML = '<p class="muted">无数据</p>'; return; }
   let html = '<table><thead><tr><th>#</th><th>名称</th><th>域名</th><th>延迟</th><th>状态</th></tr></thead><tbody>';
   results.forEach((r, i) => {
-    const host = r.host || (r.subdomain+'.'+r.domain);
+    const host = r.host || (r.subdomain ? r.subdomain+'.'+r.domain : r.domain);
     const isBest = best && best === host;
     html += '<tr class="'+(isBest?'best':'')+'"><td>'+(i+1)+'</td><td>'+ (r.name||r.display_name||'') +'</td><td><code>'+host+'</code></td><td>'+(r.latency>=0?r.latency+' ms':'—')+'</td><td><span class="tag '+CLS[r.status||'timeout']+'">'+(TAG[r.status]||'—')+'</span></td></tr>';
   });
@@ -1211,6 +1372,13 @@ async function probeDomain(item) {
 }
 
 function finalizeResults(rows) {
+  const unique = new Map();
+  rows.forEach(r => {
+    const host = r.host || (r.subdomain ? r.subdomain+'.'+r.domain : r.domain);
+    if (!unique.has(host)) unique.set(host, {...r, host});
+  });
+  rows.length = 0;
+  rows.push(...unique.values());
   rows.forEach(r => { if (r.latency >= 0) r.status = r.latency < 100 ? 'fast' : r.latency < 300 ? 'good' : 'slow'; else r.status = 'timeout'; });
   rows.sort((a,b) => { if (a.latency<0) return 1; if (b.latency<0) return -1; return a.latency-b.latency; });
   return rows;
@@ -1248,7 +1416,7 @@ async function runDomainSpeed(force) {
   const clientOk = clientResults.filter(r => r.latency >= 0).length;
   if (clientOk > 0) {
     results = clientResults;
-    st.textContent = '浏览器测速完成（' + clientOk + '/12 可用）';
+    st.textContent = '浏览器测速完成（' + clientOk + '/' + OPT_DOMAINS.length + ' 可用）';
     try {
       await fetch('/api/domains/speed', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ results }) });
     } catch(e) {}
@@ -1374,6 +1542,12 @@ function buildAdminHtml() {
     </div>
     <p class="muted" id="inviteSummary" style="margin:0 0 12px">LOADING...</p>
     <div id="inviteList" style="max-height:320px;overflow:auto"><p class="muted">LOADING...</p></div>
+  </div>
+
+  <div class="card">
+    <h2>数据库维护<span class="h2-en">DATABASE</span></h2>
+    <div class="warn">重置会清空路由、统计、测速缓存、邀请码、用户和用户域名记录，但不会删除 D1 数据库实例，也不会修改管理员环境变量。此操作不可撤销。</div>
+    <button class="btn btn-del" style="margin-top:16px" onclick="resetDatabase()">重置数据库</button>
   </div>
 </div>
 
@@ -1648,9 +1822,11 @@ async function loadInvites(){
     inviteData=d.codes||[];
     document.getElementById('inviteSummary').textContent='共 '+d.total+' 个 · 已使用 '+d.used+' 个 · 剩余 '+d.remaining+' 个（上限 50）';
     if(!inviteData.length){document.getElementById('inviteList').innerHTML='<p class="muted">还没有邀请码，点上方按钮生成。</p>';return;}
-    let h='<table><thead><tr><th>邀请码</th><th>状态</th><th>使用者ID</th><th>创建时间</th></tr></thead><tbody>';
+    let h='<table><thead><tr><th>邀请码</th><th>状态</th><th>使用者</th><th>生成时间</th><th>使用时间</th><th>操作</th></tr></thead><tbody>';
     inviteData.forEach(c=>{
-      h+='<tr><td><code>'+c.code+'</code></td><td>'+(c.status==='used'?'<span class="tag tag-slow">已使用</span>':'<span class="tag tag-fast">未使用</span>')+'</td><td>'+(c.used_by||'—')+'</td><td>'+(c.created_at||'—')+'</td></tr>';
+      var user=c.used_by_username?(c.used_by_username+' (ID '+c.used_by+')'):(c.used_by?'ID '+c.used_by:'—');
+      var action=c.status==='used'?'<button class="btn btn-sm btn-del" onclick="releaseInvite(\\''+c.code+'\\')">释放</button>':'—';
+      h+='<tr><td><code>'+c.code+'</code></td><td>'+(c.status==='used'?'<span class="tag tag-slow">已使用</span>':'<span class="tag tag-fast">未使用</span>')+'</td><td>'+user+'</td><td>'+(c.created_at||'—')+'</td><td>'+(c.used_at||'—')+'</td><td>'+action+'</td></tr>';
     });
     document.getElementById('inviteList').innerHTML=h+'</tbody></table>';
   }catch(e){document.getElementById('inviteList').innerHTML='<p class="muted">加载失败: '+e.message+'</p>';}
@@ -1666,6 +1842,19 @@ function copyUnusedInvites(){
   const unused=inviteData.filter(c=>c.status==='unused').map(c=>c.code);
   if(!unused.length){showToast('没有未使用的邀请码');return;}
   navigator.clipboard.writeText(unused.join('\\n')).then(()=>showToast('已复制 '+unused.length+' 个邀请码')).catch(()=>showToast('复制失败，请手动选择'));
+}
+async function releaseInvite(code){
+  if(!confirm('确定释放邀请码 '+code+'？释放后它可以再次注册。'))return;
+  const r=await fetch('/admin/api/invites/release',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code})});
+  const d=await r.json();
+  if(d.ok){showToast('邀请码已释放');loadInvites();}else{showToast(d.error||'释放失败');}
+}
+async function resetDatabase(){
+  if(!confirm('确定重置数据库？所有用户、邀请码、路由、统计和缓存都会被清空。'))return;
+  if(prompt('请输入 RESET DATABASE 以确认')!=='RESET DATABASE'){showToast('已取消');return;}
+  const r=await fetch('/admin/api/database/reset',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation:'RESET DATABASE'})});
+  const d=await r.json();
+  if(d.ok){showToast(d.dnsWarnings&&d.dnsWarnings.length?'数据库已重置，但有 DNS 清理警告':'数据库已重置');loadRoutes();loadInvites();}else{showToast(d.error||'重置失败');}
 }
 
 loadRoutes();
@@ -1780,9 +1969,12 @@ export default {
         const username = (body.username || '').trim().toLowerCase();
         const password = body.password || '';
         const invite_code = (body.invite_code || '').trim();
-        if (!username || username.length < 3 || username.length > 32 || !/^[a-z0-9_]+$/.test(username)) return json({ error: '用户名需3-32位小写字母数字下划线' }, 400);
+        if (!username || username.length < 3 || username.length > 32 || !isDnsLabel(username)) return json({ error: '用户名需3-32位小写字母、数字或连字符，且不能以连字符开头或结尾' }, 400);
+        if (RESERVED_SUBDOMAINS.includes(username)) return json({ error: '该用户名为系统保留名称，不可使用' }, 409);
         if (!password || password.length < 6) return json({ error: '密码至少6位' }, 400);
         if (!invite_code) return json({ error: '请填写邀请码' }, 400);
+        const dnsConfig = getDnsConfig(env);
+        if (!dnsConfig.zoneId || !dnsConfig.token) return json({ error: 'DNS 自动配置未完成：请管理员设置 CF_DNS_API_TOKEN 和 CF_ZONE_ID' }, 503);
         const existing = await env.DB.prepare('SELECT id FROM users WHERE username = ?').bind(username).first();
         if (existing) return json({ error: '用户名已存在' }, 409);
         const totalUsers = await env.DB.prepare('SELECT COUNT(*) as c FROM users').first();
@@ -1792,16 +1984,41 @@ export default {
         const salt = genSalt();
         const hash = await hashPassword(password, salt);
         const initialRole = 'user';
-        const res = await env.DB.prepare('INSERT INTO users (username, password_hash, salt, role) VALUES (?, ?, ?, ?)').bind(username, hash, salt, initialRole).run();
-        const userId = res.meta.last_row_id;
-        await env.DB.prepare("UPDATE invite_codes SET status = 'used', used_by = ? WHERE code = ?").bind(userId, invite_code).run();
-        const token = await signSession(userId, env);
-        return new Response(JSON.stringify({ ok: true }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json', 'Set-Cookie': setSessionCookie(token) },
-        });
+        let userId = null;
+        let dnsCreated = false;
+        try {
+          const res = await env.DB.prepare('INSERT INTO users (username, password_hash, salt, role) VALUES (?, ?, ?, ?)').bind(username, hash, salt, initialRole).run();
+          userId = res.meta.last_row_id;
+          const dns = await replaceUserDnsRecord(env, username, DEFAULT_PREFERRED_HOST);
+          dnsCreated = true;
+          await env.DB.prepare(
+            'INSERT INTO user_domains (user_id, subdomain, preferred_host, remark, dns_record_id, dns_record_type) VALUES (?, ?, ?, ?, ?, ?)'
+          ).bind(userId, username, dns.host, '注册自动创建', dns.recordId, dns.type).run();
+          const inviteUpdate = await env.DB.prepare(
+            "UPDATE invite_codes SET status = 'used', used_by = ?, used_at = CURRENT_TIMESTAMP WHERE code = ? AND status = 'unused'"
+          ).bind(userId, invite_code).run();
+          if (!inviteUpdate.meta?.changes) throw new Error('邀请码已被其他请求使用，请更换邀请码');
+          const token = await signSession(userId, env);
+          return new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json', 'Set-Cookie': setSessionCookie(token) },
+          });
+        } catch (e) {
+          if (userId !== null) {
+            try { await env.DB.prepare('DELETE FROM user_domains WHERE user_id = ?').bind(userId).run(); } catch (_) {}
+            try { await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(userId).run(); } catch (_) {}
+          }
+          if (dnsCreated) {
+            try { await deleteUserDnsRecords(env, username); } catch (_) {}
+          }
+          throw e;
+        }
       } catch (e) {
         console.error('Registration failed:', e);
+        const message = String(e?.message || '');
+        if (message.includes('DNS') || message.includes('Cloudflare') || message.includes('邀请码已被')) {
+          return json({ ok: false, error: message }, 400);
+        }
         return json({ ok: false, error: '注册失败：数据库操作异常，请稍后重试' }, 500);
       }
     }
@@ -1862,7 +2079,7 @@ export default {
       if (!env.DB) return json({ error: 'DB 未绑定' }, 500);
       const u = await getUser(request, env);
       if (!u) return json({ error: '未登录' }, 401);
-      const rows = await env.DB.prepare("SELECT subdomain, preferred_host, remark, status FROM user_domains WHERE user_id = ?").bind(u.id).all();
+      const rows = await env.DB.prepare("SELECT subdomain, preferred_host, remark, status, dns_record_type FROM user_domains WHERE user_id = ? ORDER BY id").bind(u.id).all();
       return json({ ok: true, domains: rows.results || [] });
     }
 
@@ -1871,18 +2088,31 @@ export default {
       const u = await getUser(request, env);
       if (!u) return json({ error: '未登录' }, 401);
       const body = await request.json().catch(() => ({}));
-      const subdomain = (body.subdomain || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
-      const preferred_host = (body.preferred_host || '').trim();
+      const subdomain = u.username;
+      const preferred_host = normalizeDnsTarget(body.preferred_host);
       const remark = (body.remark || '').trim().slice(0, 200);
-      if (!subdomain || subdomain.length < 3 || subdomain.length > 32) return json({ error: '子域名需3-32位小写字母数字' }, 400);
-      if (!preferred_host) return json({ error: '请填写优选域名/IP' }, 400);
-      if (RESERVED_SUBDOMAINS.includes(subdomain)) return json({ error: '该子域名保留不可用' }, 409);
-      const dup = await env.DB.prepare("SELECT id FROM user_domains WHERE subdomain = ?").bind(subdomain).first();
-      if (dup) return json({ error: '子域名已被占用' }, 409);
-      const userCount = await env.DB.prepare("SELECT COUNT(*) as c FROM user_domains WHERE user_id = ?").bind(u.id).first();
-      if (userCount && userCount.c >= 5) return json({ error: '每人最多5个子域名' }, 409);
-      await env.DB.prepare("INSERT INTO user_domains (user_id, subdomain, preferred_host, remark) VALUES (?, ?, ?, ?)").bind(u.id, subdomain, preferred_host, remark).run();
-      return json({ ok: true });
+      if (!preferred_host) return json({ error: '优选目标必须是合法域名或 IP' }, 400);
+      const current = await env.DB.prepare(
+        "SELECT id, preferred_host FROM user_domains WHERE user_id = ? AND subdomain = ?"
+      ).bind(u.id, subdomain).first();
+      try {
+        const dns = await replaceUserDnsRecord(env, subdomain, preferred_host);
+        if (current) {
+          await env.DB.prepare(
+            'UPDATE user_domains SET preferred_host = ?, remark = ?, dns_record_id = ?, dns_record_type = ? WHERE id = ?'
+          ).bind(preferred_host, remark, dns.recordId, dns.type, current.id).run();
+        } else {
+          await env.DB.prepare(
+            'INSERT INTO user_domains (user_id, subdomain, preferred_host, remark, dns_record_id, dns_record_type) VALUES (?, ?, ?, ?, ?, ?)'
+          ).bind(u.id, subdomain, preferred_host, remark, dns.recordId, dns.type).run();
+        }
+        return json({ ok: true, dns: { name: dns.name, type: dns.type, content: dns.host } });
+      } catch (e) {
+        if (current?.preferred_host) {
+          try { await replaceUserDnsRecord(env, subdomain, current.preferred_host); } catch (_) {}
+        }
+        return json({ error: e.message || 'DNS 记录更新失败' }, 400);
+      }
     }
 
     if (url.pathname === '/api/user/domains' && request.method === 'DELETE') {
@@ -1891,6 +2121,7 @@ export default {
       if (!u) return json({ error: '未登录' }, 401);
       const subdomain = url.searchParams.get('subdomain');
       if (!subdomain) return json({ error: '缺少 subdomain 参数' }, 400);
+      if (subdomain.toLowerCase() === u.username) return json({ error: '注册绑定的访问域名不能删除，请修改优选目标' }, 409);
       const row = await env.DB.prepare("SELECT id FROM user_domains WHERE subdomain = ? AND user_id = ?").bind(subdomain, u.id).first();
       if (!row) return json({ error: '子域名不存在' }, 404);
       await env.DB.prepare("DELETE FROM user_domains WHERE id = ?").bind(row.id).run();
@@ -1901,7 +2132,7 @@ export default {
       if (await hasAdminAccess(request, env)) return html(buildAdminHtml());
       const u = env.DB ? await getUser(request, env) : null;
       if (u && u.role === 'admin') return html(buildAdminHtml());
-      if (u) return html(buildUserHtml(u));
+      if (u) return html(buildUserHtml(u, env));
       return html(buildLoginHtml());
     }
 

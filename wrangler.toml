@@ -9,9 +9,7 @@ keep_vars = true
 BASE_DOMAIN = "dirige.de5.net"
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = ""
-CF_API_TOKEN = ""
 CF_ZONE_ID = ""
-CF_ACCOUNT_ID = ""
 DNS_RECORD_NAME = "emby"
 
 [[d1_databases]]

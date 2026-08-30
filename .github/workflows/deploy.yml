@@ -36,13 +36,6 @@ jobs:
             echo "✅ CF_ACCOUNT_ID"
           fi
           
-          if [ -z "${{ secrets.ADMIN_TOKEN }}" ]; then
-            echo "❌ ADMIN_TOKEN - 管理后台密钥 (必需)"
-            MISSING="true"
-          else
-            echo "✅ ADMIN_TOKEN"
-          fi
-          
           if [ -z "${{ secrets.BASE_DOMAIN }}" ]; then
             echo "❌ BASE_DOMAIN - 你的域名 (必需)"
             MISSING="true"
@@ -60,9 +53,16 @@ jobs:
           fi
           
           if [ -z "${{ secrets.CF_ZONE_ID }}" ]; then
-            echo "⚪ CF_ZONE_ID - Cloudflare Zone ID (可选，用于DNS和路由配置)"
+            echo "❌ CF_ZONE_ID - Cloudflare Zone ID (注册自动DNS和通配符路由必需)"
+            MISSING="true"
           else
             echo "✅ CF_ZONE_ID = ${{ secrets.CF_ZONE_ID }}"
+          fi
+
+          if [ -z "${{ secrets.CF_DNS_API_TOKEN }}" ]; then
+            echo "⚪ CF_DNS_API_TOKEN - DNS 编辑令牌（可选，默认复用 CF_API_TOKEN）"
+          else
+            echo "✅ CF_DNS_API_TOKEN"
           fi
           
           if [ -z "${{ secrets.DNS_RECORD_NAME }}" ]; then
@@ -140,17 +140,8 @@ jobs:
           sed -i "s/name = \"emby-proxy\"/name = \"$WORKER_NAME\"/g" wrangler.toml
           echo "   Worker 名称: $WORKER_NAME"
           
-          sed -i "s|BASE_DOMAIN = \"example.com\"|BASE_DOMAIN = \"${{ secrets.BASE_DOMAIN }}\"|g" wrangler.toml
+          sed -i "s|^BASE_DOMAIN = .*|BASE_DOMAIN = \"${{ secrets.BASE_DOMAIN }}\"|g" wrangler.toml
           echo "   BASE_DOMAIN: ${{ secrets.BASE_DOMAIN }}"
-          
-          sed -i "s|ADMIN_TOKEN = \"\"|ADMIN_TOKEN = \"${{ secrets.ADMIN_TOKEN }}\"|g" wrangler.toml
-          echo "   ADMIN_TOKEN: ******"
-
-          sed -i "s|CF_API_TOKEN = \"\"|CF_API_TOKEN = \"${{ secrets.CF_API_TOKEN }}\"|g" wrangler.toml
-          echo "   CF_API_TOKEN: ******"
-          
-          sed -i "s|CF_ACCOUNT_ID = \"\"|CF_ACCOUNT_ID = \"${{ secrets.CF_ACCOUNT_ID }}\"|g" wrangler.toml
-          echo "   CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}"
           
           if [ -n "${{ secrets.CF_ZONE_ID }}" ]; then
             sed -i "s|CF_ZONE_ID = \"\"|CF_ZONE_ID = \"${{ secrets.CF_ZONE_ID }}\"|g" wrangler.toml
@@ -165,6 +156,18 @@ jobs:
           if [ -n "${{ steps.get-db-id.outputs.DATABASE_ID }}" ]; then
             sed -i "s|database_id = \"5f966506-c2c9-46b0-8f85-9c6ba639c568\"|database_id = \"${{ steps.get-db-id.outputs.DATABASE_ID }}\"|g" wrangler.toml
             echo "   DATABASE_ID: ${{ steps.get-db-id.outputs.DATABASE_ID }}"
+          fi
+
+      - name: 配置 Worker DNS 编辑令牌
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_DNS_API_TOKEN: ${{ secrets.CF_DNS_API_TOKEN }}
+        run: |
+          if [ -n "$CF_DNS_API_TOKEN" ]; then
+            printf '%s' "$CF_DNS_API_TOKEN" | wrangler secret put CF_DNS_API_TOKEN
+          else
+            printf '%s' "$CLOUDFLARE_API_TOKEN" | wrangler secret put CF_DNS_API_TOKEN
           fi
 
       - name: 显示配置文件
@@ -187,11 +190,6 @@ jobs:
           BASE_DOMAIN: ${{ secrets.BASE_DOMAIN }}
           DNS_RECORD_NAME: ${{ secrets.DNS_RECORD_NAME }}
         run: |
-          if [ -z "$CF_ZONE_ID" ]; then
-            echo "⚪ CF_ZONE_ID 未配置，跳过路由配置"
-            exit 0
-          fi
-
           echo "🌐 配置 Worker 路由..."
 
           if [ -z "$CF_WORKER_NAME" ]; then
@@ -203,6 +201,7 @@ jobs:
           fi
 
           ROUTE_PATTERN="${DNS_RECORD_NAME}.${BASE_DOMAIN}/*"
+          WILDCARD_ROUTE_PATTERN="*.${BASE_DOMAIN}/*"
 
           echo "   路由模式: $ROUTE_PATTERN"
           echo "   Worker 名称: $CF_WORKER_NAME"
@@ -226,6 +225,21 @@ jobs:
             fi
           fi
 
+          if echo "$EXISTING_ROUTES" | grep -q "\"pattern\":\"$WILDCARD_ROUTE_PATTERN\""; then
+            echo "✅ 路由 $WILDCARD_ROUTE_PATTERN 已存在"
+          else
+            CREATE_WILDCARD_RESPONSE=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/workers/routes" \
+              -H "Authorization: Bearer $CF_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"pattern\":\"$WILDCARD_ROUTE_PATTERN\",\"script\":\"$CF_WORKER_NAME\"}")
+
+            if echo "$CREATE_WILDCARD_RESPONSE" | grep -qE '"success"\s*:\s*true'; then
+              echo "✅ 路由 $WILDCARD_ROUTE_PATTERN 创建成功"
+            else
+              echo "❌ 路由创建失败: $CREATE_WILDCARD_RESPONSE"
+            fi
+          fi
+
       - name: 创建 DNS 记录
         env:
           CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
@@ -233,11 +247,6 @@ jobs:
           BASE_DOMAIN: ${{ secrets.BASE_DOMAIN }}
           DNS_RECORD_NAME: ${{ secrets.DNS_RECORD_NAME }}
         run: |
-          if [ -z "$CF_ZONE_ID" ]; then
-            echo "⚪ CF_ZONE_ID 未配置，跳过 DNS 记录创建"
-            exit 0
-          fi
-
           echo "📝 创建 DNS 记录..."
 
           if [ -z "$DNS_RECORD_NAME" ]; then

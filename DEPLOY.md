@@ -35,9 +35,14 @@
    - 在你的 GitHub 仓库中，点击 "Settings"（设置）→ "Secrets and variables"（秘密和变量）→ "Actions"（操作）
    - 点击 "New repository secret"（新建仓库密钥）
    - 添加以下 Secrets：
-     - `CLOUDFLARE_API_TOKEN`：你的 Cloudflare API 令牌
-     - `CLOUDFLARE_ACCOUNT_ID`：你的 Cloudflare 账户 ID（在 Cloudflare "Workers & Pages" 页面右下角）
-     - `CLOUDFLARE_WORKER_NAME`：你想要创建的 Worker 名称（小写字母、数字和破折号）
+     - `CF_API_TOKEN`：用于部署 Worker、管理路由和创建 D1 的 Cloudflare API 令牌
+     - `CF_ACCOUNT_ID`：你的 Cloudflare 账户 ID
+     - `BASE_DOMAIN`：托管在该 Cloudflare Zone 下的根域名，例如 `dirige.de5.net`
+     - `CF_ZONE_ID`：该根域名的 Zone ID，用于自动 DNS 和通配符路由
+     - `CF_DNS_API_TOKEN`：可选的 DNS 编辑令牌，不填写时复用 `CF_API_TOKEN`
+     - `CF_WORKER_NAME`：可选，默认 `emby-proxy`
+     - `DNS_RECORD_NAME`：可选，默认 `emby`
+   - `CF_DNS_API_TOKEN` 或 `CF_API_TOKEN` 必须拥有对应 Zone 的 DNS 编辑权限。
 
 4. **触发部署**：
    - 在仓库页面，点击 "Actions"（操作）标签
@@ -46,8 +51,8 @@
    - 等待部署完成
 
 5. **配置 D1 数据库**：
-   - 部署完成后，登录 Cloudflare 控制台
-   - 按照下方 "方式二" 中的步骤 3 配置 D1 数据库
+   - 工作流会自动创建/绑定 `emby-proxy-db`
+   - Worker 首次请求时自动初始化表结构并给旧表补充字段，不需要删除旧 D1
 
 ### 方式二：手动部署
 
@@ -67,9 +72,9 @@
 2. 将 `worker.js` 文件中的所有内容复制粘贴到编辑框中
 3. 点击 "Save and deploy"（保存并部署）
 
-#### 3. 配置D1数据库（可选，用于统计功能）
+#### 3. 配置D1数据库（用于用户、邀请码、路由和统计功能）
 
-如果需要启用统计功能，需要配置D1数据库：
+部署脚本会自动初始化业务表；手动部署时按以下步骤绑定 D1：
 
 1. 在Cloudflare控制台左侧菜单点击 "Storage & databases"（存储和数据库）
 2. 点击 "D1"（D1 数据库）
@@ -93,7 +98,15 @@ CREATE TABLE IF NOT EXISTS auto_emby_daily_stats (
 12. 选择你刚刚创建的数据库
 13. 点击 "Save"（保存）
 
-#### 4. 配置自定义域名（可选）
+#### 4. 用户域名与通配符路由
+
+- 注册用户名会成为唯一子域名，例如 `alice.dirige.de5.net`。
+- 注册时默认创建指向 `youxuan.cf.090227.xyz` 的 CNAME。
+- 用户可在后台把目标改为优选域名、IPv4 或 IPv6；更新时会先删除该子域名下的旧 A/AAAA/CNAME，再创建新记录。
+- GitHub Actions 会自动创建 `*.BASE_DOMAIN/*` Worker 路由；手动部署时也要添加同样的通配符规则。
+- 管理员后台的“重置数据库”只清空业务数据和相关 DNS 记录，不删除 D1 实例或管理员环境变量，且需要二次确认。
+
+#### 5. 配置自定义域名（可选）
 
 1. 在Worker编辑页面，点击 "Triggers"（触发器）标签
 2. 在 "Custom Domains"（自定义域名）部分点击 "Add Custom Domain"（添加自定义域名）
