@@ -2667,6 +2667,15 @@ export default {
       if (subdomain && subdomain.length >= 1 && subdomain.length <= 32 && /^[a-z0-9-]+$/.test(subdomain) && env.DB) {
         const row = await env.DB.prepare("SELECT user_id, subdomain, preferred_host, remark, status FROM user_domains WHERE subdomain = ?").bind(subdomain).first();
         if (row && row.status === 'active') {
+          const directProxy = parseDirectProxyTarget(url.pathname, url.search);
+          if (directProxy.matched) {
+            if (directProxy.error) return new Response(directProxy.error, { status: 400 });
+            return proxyDirectUrl(request, env, ctx, [directProxy.url], {
+              enableCache: true,
+              preferredHost: row.preferred_host,
+              proxyPathPrefix: '',
+            });
+          }
           const resolved = await resolveProxyTarget(request, env, url, row.user_id);
           if (resolved.error) return resolved.error;
           return proxyDirectUrl(request, env, ctx, resolved.upstreamUrls, {
