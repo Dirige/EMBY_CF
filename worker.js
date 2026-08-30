@@ -390,8 +390,8 @@ function buildUserHtml(u, env) {
   </div>
 </div>
 <div id="modalDomain" class="modal"><div class="modal-inner">
-  <div class="modal-header"><h2 class="modal-title">添加子域名</h2><p class="modal-desc">绑定三级子域名到你的优选域名/IP</p></div>
-  <div class="form-group"><label>优选域名 / IP</label><input id="hostInput" placeholder="例如 csgo.com 或 1.2.3.4"><p class="form-hint">填优选域名或具体 IP，用于边缘路由提速</p></div>
+  <div class="modal-header"><h2 class="modal-title">修改访问域名</h2><p class="modal-desc">绑定你的三级子域名到优选域名或 IP</p></div>
+  <div class="form-group"><label>优选域名 / IP</label><input id="hostInput" placeholder="例如 youxuan.example.com 或 1.2.3.4"><p class="form-hint">系统会自动识别域名、IPv4 或 IPv6，并分别创建 CNAME、A 或 AAAA 记录</p></div>
   <div class="form-group"><label>备注</label><input id="remarkInput" placeholder="可选"></div>
   <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal('modalDomain')">取消</button><button class="btn" onclick="saveDomain()">保存</button></div>
 </div></div>
