@@ -104,11 +104,13 @@ https://github.com/Dirige/EMBY_CF
 | `CF_ZONE_ID` | ✅ | `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` | `BASE_DOMAIN` 所在 Zone ID |
 | `CF_DNS_API_TOKEN` | ✅ | `你的 DNS Token` | Worker 运行时自动创建和修改用户 DNS；不填则复用 `CF_API_TOKEN` |
 | `CF_WORKER_NAME` | ⚪ | `emby-proxy` | Worker 名称，不填默认 `emby-proxy` |
-| `DNS_RECORD_NAME` | ⚪ | `emby` | 主入口 DNS 记录名，不填默认 `emby` |
+| `DNS_RECORD_NAME` | ⚪ | `fd` | 主入口 DNS 记录名，不填默认 `fd` |
 
 > [!WARNING]
 > 不要创建空白 Secret；没用到的可选项可以不建。
 > `ADMIN_PASSWORD` 不建议放在仓库配置里，部署后到 Cloudflare Worker 控制台手动填。
+
+`fd.BASE_DOMAIN` 是默认公共试用入口，无需注册即可使用通用反代格式；如果设置了 `DNS_RECORD_NAME`，则公共入口会改为对应的子域名。
 
 ### 运行 Actions
 
@@ -155,7 +157,7 @@ https://github.com/Dirige/EMBY_CF
 | `CF_ZONE_ID` | Variable（变量） | ✅ | ✅ 由 workflow 写入 | Cloudflare Zone ID |
 | `CF_DNS_API_TOKEN` | Secret（机密） | ✅ | ✅ 由 workflow 写入 | 自动创建/修改 DNS |
 | `SESSION_SECRET` | Secret（机密） | ⚠️ 强烈建议 | ❌ 需手动填写 | 用户登录会话签名 |
-| `DNS_RECORD_NAME` | Variable（变量） | ⚪ | ✅ 默认 `emby` | 主入口记录名 |
+| `DNS_RECORD_NAME` | Variable（变量） | ⚪ | ✅ 默认 `fd` | 主入口记录名 |
 
 > [!IMPORTANT]
 > 不设置 `SESSION_SECRET` 时，会话签名会回退到源码中公开的固定密钥，**任何人都可以伪造管理员登录态**。请务必设置一个随机长字符串，例如 `openssl rand -hex 32` 的输出。

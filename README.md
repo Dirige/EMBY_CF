@@ -53,6 +53,7 @@ https://你的入口域名/https://emby.example.com:8096/emby/Items
 ```
 
 目标地址支持 `http://`、`https://`、域名、端口和目标路径；该方式适合临时访问或测试。使用 Emby 播放时，系统会自动处理上游返回的跳转地址和播放直链，使其继续经过通用反代入口。
+部署默认入口为 `fd.你的根域名`，无需注册即可直接试用；如果修改了 `DNS_RECORD_NAME`，则使用对应的入口子域名。
 
 ### 用户独立路由
 
@@ -108,7 +109,7 @@ https://你的入口域名/https://emby.example.com:8096/emby/Items
 | `ADMIN_PASSWORD` | ✅ | Worker Secret | 管理员密码，部署后手动填写 |
 | `SESSION_SECRET` | ⚠️ 强烈建议 | Worker Secret | 用户登录会话签名密钥 |
 | `CF_WORKER_NAME` | ⚪ | GitHub Secrets | Worker 名称，默认 `emby-proxy` |
-| `DNS_RECORD_NAME` | ⚪ | GitHub Secrets / Worker Variable | 主入口 DNS 记录名，默认 `emby` |
+| `DNS_RECORD_NAME` | ⚪ | GitHub Secrets / Worker Variable | 主入口 DNS 记录名，默认 `fd` |
 
 > [!IMPORTANT]
 > 不设置 `SESSION_SECRET` 时，会话签名会回退到源码中公开的固定密钥，**任何人都可以伪造管理员登录态**。请务必设置一个随机长字符串，例如 `openssl rand -hex 32` 的输出。

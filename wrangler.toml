@@ -9,7 +9,7 @@ keep_vars = true
 BASE_DOMAIN = "dirige.de5.net"
 ADMIN_USERNAME = "admin"
 CF_ZONE_ID = ""
-DNS_RECORD_NAME = "emby"
+DNS_RECORD_NAME = "fd"
 
 [[d1_databases]]
 binding = "DB"

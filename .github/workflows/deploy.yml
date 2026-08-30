@@ -66,7 +66,7 @@ jobs:
           fi
           
           if [ -z "${{ secrets.DNS_RECORD_NAME }}" ]; then
-            echo "⚪ DNS_RECORD_NAME - DNS记录名称 (可选，默认: emby)"
+            echo "⚪ DNS_RECORD_NAME - DNS记录名称 (可选，默认: fd)"
           else
             echo "✅ DNS_RECORD_NAME = ${{ secrets.DNS_RECORD_NAME }}"
           fi
@@ -149,7 +149,7 @@ jobs:
           fi
           
           if [ -n "${{ secrets.DNS_RECORD_NAME }}" ]; then
-            sed -i "s|DNS_RECORD_NAME = \"emby\"|DNS_RECORD_NAME = \"${{ secrets.DNS_RECORD_NAME }}\"|g" wrangler.toml
+            sed -i "s|DNS_RECORD_NAME = \"fd\"|DNS_RECORD_NAME = \"${{ secrets.DNS_RECORD_NAME }}\"|g" wrangler.toml
             echo "   DNS_RECORD_NAME: ${{ secrets.DNS_RECORD_NAME }}"
           fi
           
@@ -197,7 +197,7 @@ jobs:
           fi
 
           if [ -z "$DNS_RECORD_NAME" ]; then
-            DNS_RECORD_NAME="emby"
+            DNS_RECORD_NAME="fd"
           fi
 
           ROUTE_PATTERN="${DNS_RECORD_NAME}.${BASE_DOMAIN}/*"
@@ -250,7 +250,7 @@ jobs:
           echo "📝 创建 DNS 记录..."
 
           if [ -z "$DNS_RECORD_NAME" ]; then
-            DNS_RECORD_NAME="emby"
+            DNS_RECORD_NAME="fd"
           fi
 
           FULL_RECORD_NAME="$DNS_RECORD_NAME.$BASE_DOMAIN"

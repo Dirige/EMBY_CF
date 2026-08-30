@@ -2664,32 +2664,48 @@ export default {
     const baseDomain = String(env.BASE_DOMAIN || '');
     if (baseDomain && hostname.endsWith('.' + baseDomain) && hostname !== baseDomain) {
       const subdomain = hostname.slice(0, hostname.length - ('.' + baseDomain).length);
-      if (subdomain && subdomain.length >= 1 && subdomain.length <= 32 && /^[a-z0-9-]+$/.test(subdomain) && env.DB) {
-        const row = await env.DB.prepare("SELECT user_id, subdomain, preferred_host, remark, status FROM user_domains WHERE subdomain = ?").bind(subdomain).first();
-        if (row && row.status === 'active') {
+      const publicEntry = normalizeAlias(env.DNS_RECORD_NAME || 'fd');
+      if (subdomain && subdomain.length >= 1 && subdomain.length <= 32 && /^[a-z0-9-]+$/.test(subdomain)) {
+        // The configured main entry is a public trial endpoint and does not
+        // require a registered user-domain row.
+        if (subdomain.toLowerCase() === publicEntry) {
           const directProxy = parseDirectProxyTarget(url.pathname, url.search);
           if (directProxy.matched) {
             if (directProxy.error) return new Response(directProxy.error, { status: 400 });
             return proxyDirectUrl(request, env, ctx, [directProxy.url], {
               enableCache: true,
-              // The target is explicit in the URL; do not override its DNS
-              // resolution with the user's preferred host.
               proxyPathPrefix: '',
             });
           }
-          const resolved = await resolveProxyTarget(request, env, url, row.user_id);
-          if (resolved.error) return resolved.error;
-          return proxyDirectUrl(request, env, ctx, resolved.upstreamUrls, {
-            enableCache: resolved.enableCache,
-            compatMode: resolved.compatMode,
-            matchedPrefix: resolved.matchedPrefix,
-            matchedRouteId: resolved.matchedRouteId,
-            matchedUserId: resolved.matchedUserId,
-            needsSpeedTest: resolved.needsSpeedTest,
-            preferredHost: row.preferred_host,
-          });
         }
-        return new Response('子域名不存在或未启用', { status: 404 });
+
+        if (env.DB && subdomain.toLowerCase() !== publicEntry) {
+          const row = await env.DB.prepare("SELECT user_id, subdomain, preferred_host, remark, status FROM user_domains WHERE subdomain = ?").bind(subdomain).first();
+          if (row && row.status === 'active') {
+            const directProxy = parseDirectProxyTarget(url.pathname, url.search);
+            if (directProxy.matched) {
+              if (directProxy.error) return new Response(directProxy.error, { status: 400 });
+              return proxyDirectUrl(request, env, ctx, [directProxy.url], {
+                enableCache: true,
+                // The target is explicit in the URL; do not override its DNS
+                // resolution with the user's preferred host.
+                proxyPathPrefix: '',
+              });
+            }
+            const resolved = await resolveProxyTarget(request, env, url, row.user_id);
+            if (resolved.error) return resolved.error;
+            return proxyDirectUrl(request, env, ctx, resolved.upstreamUrls, {
+              enableCache: resolved.enableCache,
+              compatMode: resolved.compatMode,
+              matchedPrefix: resolved.matchedPrefix,
+              matchedRouteId: resolved.matchedRouteId,
+              matchedUserId: resolved.matchedUserId,
+              needsSpeedTest: resolved.needsSpeedTest,
+              preferredHost: row.preferred_host,
+            });
+          }
+          return new Response('子域名不存在或未启用', { status: 404 });
+        }
       }
     }
 
