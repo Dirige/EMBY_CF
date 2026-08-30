@@ -1,0 +1,20 @@
+name = "emby-proxy"
+main = "worker.js"
+compatibility_date = "2025-05-15"
+compatibility_flags = ["nodejs_compat"]
+# 部署时保留控制台手动添加的变量/机密（如 ADMIN_USERNAME / ADMIN_PASSWORD）
+keep_vars = true
+
+[vars]
+BASE_DOMAIN = "dirige.de5.net"
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD = ""
+CF_API_TOKEN = ""
+CF_ZONE_ID = ""
+CF_ACCOUNT_ID = ""
+DNS_RECORD_NAME = "emby"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "emby-proxy-db"
+database_id = "5f966506-c2c9-46b0-8f85-9c6ba639c568"
