@@ -2672,7 +2672,8 @@ export default {
             if (directProxy.error) return new Response(directProxy.error, { status: 400 });
             return proxyDirectUrl(request, env, ctx, [directProxy.url], {
               enableCache: true,
-              preferredHost: row.preferred_host,
+              // The target is explicit in the URL; do not override its DNS
+              // resolution with the user's preferred host.
               proxyPathPrefix: '',
             });
           }
