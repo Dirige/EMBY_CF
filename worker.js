@@ -201,11 +201,10 @@ body{display:flex;align-items:center;justify-content:center;min-height:100vh;pad
 <p class="login-sub">New Account Registration</p>
 <input type="text" id="regUser" placeholder="用户名（3-32位字母数字下划线）" autocomplete="username" onkeydown="if(event.key==='Enter')doReg()">
 <input type="password" id="regPass" placeholder="密码（至少6位）" autocomplete="new-password" onkeydown="if(event.key==='Enter')doReg()">
-<input type="text" id="regCode" placeholder="邀请码（32位）" value="DIRIGE-DEFAULT-INVITE-2024" onkeydown="if(event.key==='Enter')doReg()">
-<p class="hint">首次部署默认邀请码: <code>DIRIGE-DEFAULT-INVITE-2024</code>（登录后请在管理后台生成新邀请码）</p>
+<input type="text" id="regCode" placeholder="邀请码（向管理员获取）" onkeydown="if(event.key==='Enter')doReg()">
 <p id="regErr" class="login-err"></p>
 <button class="btn" style="width:100%" id="regBtn" onclick="doReg()">注册并登录</button>
-<p class="login-link"><a href="/admin">已有账号？去登录</a></p>
+<p class="login-link"><a href="/admin">管理员登录</a></p>
 <script>
 async function doReg(){
   var u=document.getElementById('regUser').value.trim();
@@ -350,13 +349,6 @@ async function initDatabase(env) {
   ]);
   try { await env.DB.exec(`ALTER TABLE routes ADD COLUMN target_latencies TEXT DEFAULT ''`); } catch(e) {}
   try { await env.DB.exec(`ALTER TABLE routes ADD COLUMN compat_mode TEXT DEFAULT 'off'`); } catch(e) {}
-  // 创建默认邀请码（仅当表为空时）
-  try {
-    const count = await env.DB.prepare('SELECT COUNT(*) as c FROM invite_codes').first();
-    if (!count || count.c === 0) {
-      await env.DB.prepare("INSERT INTO invite_codes (code) VALUES (?)").bind(DEFAULT_INVITE_CODE).run();
-    }
-  } catch(e) {}
   dbReady = true;
 }
 
