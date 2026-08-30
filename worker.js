@@ -373,6 +373,21 @@ function buildUserHtml(u, env) {
     <p class="muted" style="margin:0 0 14px">注册后自动生成 <code>${u.username}.${baseDomain}</code>，默认指向 <code>${DEFAULT_PREFERRED_HOST}</code>。你可以修改优选域名或 IP。</p>
     <div id="domainList" class="route-grid"><p class="muted">LOADING...</p></div>
   </div>
+
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;flex-wrap:wrap;gap:16px">
+      <h2 style="border:none;margin:0;padding:0;flex:1">我的路由<span class="h2-en" style="float:none;margin-left:12px">ROUTES</span></h2>
+      <div class="toolbar" style="margin:0">
+        <button class="btn" onclick="openUserRouteModal()">添加路由</button>
+        <div class="search-box">
+          <span class="search-icon">⌕</span>
+          <input type="text" id="userRouteSearch" placeholder="搜索备注或路径..." oninput="filterUserRoutes()">
+        </div>
+      </div>
+    </div>
+    <p class="muted" style="margin:0 0 14px">路由可通过 <code>https://${u.username}.${baseDomain}/路径</code> 访问，路径全站唯一。</p>
+    <div id="userRouteList" class="route-grid"><p class="muted">LOADING...</p></div>
+  </div>
 </div>
 <div id="modalDomain" class="modal"><div class="modal-inner">
   <div class="modal-header"><h2 class="modal-title">添加子域名</h2><p class="modal-desc">绑定三级子域名到你的优选域名/IP</p></div>
@@ -380,17 +395,42 @@ function buildUserHtml(u, env) {
   <div class="form-group"><label>备注</label><input id="remarkInput" placeholder="可选"></div>
   <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal('modalDomain')">取消</button><button class="btn" onclick="saveDomain()">保存</button></div>
 </div></div>
+<div id="modalUserRoute" class="modal"><div class="modal-inner">
+  <div class="modal-header"><h2 class="modal-title" id="userRouteModalTitle">添加路由</h2><p class="modal-desc">创建后可通过你的访问域名加路径访问目标服务</p></div>
+  <input type="hidden" id="userOldPrefix">
+  <div class="form-group"><label>备注名</label><input id="userRouteRemark" placeholder="例如：我的 Emby 服务器"></div>
+  <div class="form-group"><label>路径 (prefix)</label><input id="userRoutePrefix" placeholder="myemby" oninput="updateUserPrefixPreview()"><p class="form-hint">访问路径: https://${u.username}.${baseDomain}/<span id="userPrefixPreview">myemby</span></p></div>
+  <div class="form-group">
+    <label>目标线路 (target)</label>
+    <div id="userTargetInputs" class="target-inputs">
+      <div class="target-input-row"><input type="url" class="user-target-url-input" placeholder="主线路地址 (如: https://emby.example.com:8096)"><button class="btn-remove" onclick="removeUserTargetInput(this)" title="移除">✕</button></div>
+    </div>
+    <button class="btn btn-outline btn-sm" style="margin-top:8px" onclick="addUserTargetInput()">添加备用线路</button>
+    <p class="form-hint">多个线路按顺序 failover，测速后按延迟排序优选</p>
+  </div>
+  <div class="form-group">
+    <label class="checkbox-label"><input type="checkbox" id="userRouteCache" checked> 启用图片/静态资源缓存</label>
+    <label class="checkbox-label" style="margin-top:12px"><input type="checkbox" id="userRouteCompat"> 兼容模式</label>
+    <p class="form-hint">兼容模式适用于部分无法正常播放的 Emby 服务器</p>
+  </div>
+  <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal('modalUserRoute')">取消</button><button class="btn" onclick="saveUserRoute()">保存</button></div>
+</div></div>
 <script>
+let myRoutes=[];
 function closeModal(id){document.getElementById(id).classList.remove('show');}
 function openModal(id){document.getElementById(id).classList.add('show');}
 function doLogout(){document.cookie='user_token=;path=/;max-age=0';location.reload();}
 function showToast(msg){var t=document.getElementById('toast');if(!t){t=document.createElement('div');t.id='toast';document.body.appendChild(t);}t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},2500);}
+function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+function enc(v){return encodeURIComponent(String(v==null?'':v));}
+function getLatencyInfo(ms){if(ms<0)return {text:'超时',cls:'tag-timeout',color:'#ff5c7a'};if(ms<100)return {text:'极快',cls:'tag-fast',color:'#00ff9d'};if(ms<300)return {text:'良好',cls:'tag-good',color:'#00e5ff'};return {text:'较慢',cls:'tag-slow',color:'#ffb454'};}
+function parseLatencies(latStr){if(!latStr)return {};try{return JSON.parse(latStr);}catch(e){return {};}}
 async function loadDomains(){
   var r=await fetch('/api/user/domains');var d=await r.json();var box=document.getElementById('domainList');
-  if(!d.domains||!d.domains.length){box.innerHTML='<div class="empty-state" style="grid-column:1/-1"><span class="empty-state-icon"></span><p class="empty-state-text">还没有子域名，点上方按钮添加</p></div>';return;}
-  box.innerHTML=d.domains.map(function(x){return '<div class="route-item"><div class="route-header"><div class="route-title"><h3 class="route-name">'+x.subdomain+'.${baseDomain}</h3><span class="route-path">'+x.preferred_host+'</span></div></div><div class="route-meta">'+(x.remark?'<span class="meta-tag">'+x.remark+'</span>':'')+'<span class="meta-tag '+(x.status==='active'?'meta-tag-on':'meta-tag-warn')+'">'+(x.status==='active'?'ACTIVE':'DISABLED')+'</span><button class="btn btn-sm btn-outline" onclick="editDomain(\\''+x.subdomain+'\\',\\''+x.preferred_host+'\\',\\''+(x.remark||'')+'\\')">修改目标</button></div></div>';}).join('');
+  if(!d.domains||!d.domains.length){box.innerHTML='<div class="empty-state" style="grid-column:1/-1"><span class="empty-state-icon"></span><p class="empty-state-text">还没有访问域名</p></div>';return;}
+  box.innerHTML=d.domains.map(function(x){return '<div class="route-item"><div class="route-header"><div class="route-title"><h3 class="route-name">'+esc(x.subdomain)+'.${baseDomain}</h3><span class="route-path">'+esc(x.preferred_host)+'</span></div></div><div class="route-meta">'+(x.remark?'<span class="meta-tag">'+esc(x.remark)+'</span>':'')+'<span class="meta-tag '+(x.status==='active'?'meta-tag-on':'meta-tag-warn')+'">'+(x.status==='active'?'ACTIVE':'DISABLED')+'</span><button class="btn btn-sm btn-outline" onclick="editDomain(\\''+enc(x.subdomain)+'\\',\\''+enc(x.preferred_host)+'\\',\\''+enc(x.remark||'')+'\\')">修改目标</button></div></div>';}).join('');
 }
-function editDomain(sub,host,remark){document.getElementById('hostInput').value=host||'';document.getElementById('remarkInput').value=remark||'';openModal('modalDomain');}
+function editDomain(sub,host,remark){document.getElementById('hostInput').value=decodeURIComponent(host||'');document.getElementById('remarkInput').value=decodeURIComponent(remark||'');openModal('modalDomain');}
 async function saveDomain(){
   var host=document.getElementById('hostInput').value.trim();
   var remark=document.getElementById('remarkInput').value.trim();
@@ -399,7 +439,138 @@ async function saveDomain(){
   var d=await r.json();
   if(d.ok){closeModal('modalDomain');document.getElementById('hostInput').value='';document.getElementById('remarkInput').value='';loadDomains();showToast('DNS 记录已更新');}else{showToast(d.error||'失败');}
 }
+async function loadUserRoutes(){
+  const r=await fetch('/api/user/routes');
+  if(r.status===401){location.reload();return;}
+  const d=await r.json();
+  myRoutes=d.routes||[];
+  renderUserRoutes(myRoutes);
+}
+function renderUserRoutes(list){
+  const el=document.getElementById('userRouteList');
+  if(!list.length){el.innerHTML='<div class="empty-state" style="grid-column:1/-1"><span class="empty-state-icon"></span><p class="empty-state-text">暂无路由，点击上方按钮添加</p></div>';return;}
+  el.innerHTML=list.map(function(r){
+    const targets=String(r.target||'').split(',').map(function(s){return s.trim();}).filter(Boolean);
+    const latencies=parseLatencies(r.target_latencies);
+    const remarkName=r.remark||'未命名';
+    const cacheStatus=r.cache_img!=='off';
+    const compatStatus=r.compat_mode==='on';
+    let targetsHtml='';
+    targets.forEach(function(t,idx){
+      const lat=latencies[t];
+      const latInfo=getLatencyInfo(lat);
+      const tag=idx===0?'<span class="tag tag-fast">主</span>':'<span class="tag tag-slow">备'+idx+'</span>';
+      const latDisplay=typeof lat==='number'&&lat>=0?'<span class="target-latency" style="color:'+latInfo.color+'">'+lat+'ms <span class="tag '+latInfo.cls+'">'+latInfo.text+'</span></span>':'<span class="target-latency" style="color:#5d7290">未测速</span>';
+      targetsHtml+='<div class="target-row">'+tag+' <span class="target-url"><code>'+esc(t)+'</code></span>'+latDisplay+'</div>';
+    });
+    return '<div class="route-item" data-search="'+esc((remarkName+' '+r.prefix).toLowerCase())+'">'+
+      '<div class="route-header"><div class="route-title"><h3 class="route-name">'+esc(remarkName)+'</h3><span class="route-path">/'+esc(r.prefix)+'</span></div></div>'+
+      '<div class="target-list">'+targetsHtml+'</div>'+
+      '<div class="route-meta">'+
+        (cacheStatus?'<span class="meta-tag meta-tag-on">缓存 ON</span>':'<span class="meta-tag">缓存 OFF</span>')+
+        (compatStatus?'<span class="meta-tag meta-tag-warn">兼容模式</span>':'')+
+        (r.last_play?'<span class="meta-tag">'+esc(r.last_play)+'</span>':'')+
+      '</div>'+
+      '<div class="route-actions">'+
+        '<button class="btn btn-sm btn-outline" onclick="speedtestUserRoute(\\''+enc(r.prefix)+'\\')">测速</button>'+
+        '<button class="btn btn-sm btn-outline" onclick="editUserRoute(\\''+enc(r.prefix)+'\\')">编辑</button>'+
+        '<button class="btn btn-sm btn-del" onclick="delUserRoute(\\''+enc(r.prefix)+'\\')">删除</button>'+
+      '</div></div>';
+  }).join('');
+}
+function filterUserRoutes(){
+  const q=document.getElementById('userRouteSearch').value.toLowerCase();
+  document.querySelectorAll('#userRouteList .route-item').forEach(function(c){c.style.display=(!q||c.dataset.search.includes(q))?'block':'none';});
+}
+function updateUserPrefixPreview(){document.getElementById('userPrefixPreview').textContent=document.getElementById('userRoutePrefix').value.trim().replace(/^\\/+|\\/+$/g,'')||'myemby';}
+function addUserTargetInput(){
+  var container=document.getElementById('userTargetInputs');
+  var row=document.createElement('div');
+  row.className='target-input-row';
+  row.innerHTML='<input type="url" class="user-target-url-input" placeholder="备用线路地址"><button class="btn-remove" onclick="removeUserTargetInput(this)" title="移除">✕</button>';
+  container.appendChild(row);
+}
+function removeUserTargetInput(btn){
+  var container=document.getElementById('userTargetInputs');
+  if(container.querySelectorAll('.target-input-row').length>1)btn.parentElement.remove();
+}
+function openUserRouteModal(){
+  document.getElementById('userOldPrefix').value='';
+  document.getElementById('userRouteRemark').value='';
+  document.getElementById('userRoutePrefix').value='';
+  document.getElementById('userRouteCache').checked=true;
+  document.getElementById('userRouteCompat').checked=false;
+  document.getElementById('userPrefixPreview').textContent='myemby';
+  document.getElementById('userRouteModalTitle').textContent='添加路由';
+  document.getElementById('userTargetInputs').innerHTML='<div class="target-input-row"><input type="url" class="user-target-url-input" placeholder="主线路地址 (如: https://emby.example.com:8096)"><button class="btn-remove" onclick="removeUserTargetInput(this)" title="移除">✕</button></div>';
+  openModal('modalUserRoute');
+}
+function editUserRoute(prefixValue){
+  const prefix=decodeURIComponent(prefixValue||'');
+  const r=myRoutes.find(function(x){return x.prefix===prefix;});
+  if(!r)return;
+  document.getElementById('userOldPrefix').value=r.prefix;
+  document.getElementById('userRouteRemark').value=r.remark||'';
+  document.getElementById('userRoutePrefix').value=r.prefix;
+  document.getElementById('userRouteCache').checked=r.cache_img!=='off';
+  document.getElementById('userRouteCompat').checked=r.compat_mode==='on';
+  document.getElementById('userPrefixPreview').textContent=r.prefix;
+  document.getElementById('userRouteModalTitle').textContent='编辑路由';
+  var container=document.getElementById('userTargetInputs');
+  container.innerHTML='';
+  var targets=String(r.target||'').split(',').map(function(s){return s.trim();}).filter(Boolean);
+  targets.forEach(function(t){
+    var row=document.createElement('div');
+    row.className='target-input-row';
+    row.innerHTML='<input type="url" class="user-target-url-input" value="'+esc(t)+'"><button class="btn-remove" onclick="removeUserTargetInput(this)" title="移除">✕</button>';
+    container.appendChild(row);
+  });
+  if(!targets.length){
+    container.innerHTML='<div class="target-input-row"><input type="url" class="user-target-url-input" placeholder="主线路地址"><button class="btn-remove" onclick="removeUserTargetInput(this)" title="移除">✕</button></div>';
+  }
+  openModal('modalUserRoute');
+}
+async function saveUserRoute(){
+  const oldPrefix=document.getElementById('userOldPrefix').value;
+  const remark=document.getElementById('userRouteRemark').value.trim();
+  const prefix=document.getElementById('userRoutePrefix').value.trim().replace(/^\\/+|\\/+$/g,'');
+  const cache_img=document.getElementById('userRouteCache').checked?'on':'off';
+  const compat_mode=document.getElementById('userRouteCompat').checked?'on':'off';
+  var targets=[];
+  document.querySelectorAll('.user-target-url-input').forEach(function(inp){
+    var val=inp.value.trim().replace(/\\/$/g,'');
+    if(val)targets.push(val);
+  });
+  if(!prefix){showToast('请输入路径');return;}
+  if(!targets.length){showToast('请至少填写一个主线路地址');return;}
+  const r=await fetch('/api/user/routes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({oldPrefix:oldPrefix,prefix:prefix,target:targets.join(','),remark:remark,cache_img:cache_img,compat_mode:compat_mode})});
+  const d=await r.json();
+  if(!r.ok||!d.ok){showToast(d.error||'保存失败');return;}
+  closeModal('modalUserRoute');
+  showToast('路由已保存');
+  loadUserRoutes();
+}
+async function delUserRoute(prefixValue){
+  const prefix=decodeURIComponent(prefixValue||'');
+  if(!confirm('确定删除路由 /'+prefix+' ？'))return;
+  const r=await fetch('/api/user/routes?prefix='+encodeURIComponent(prefix),{method:'DELETE'});
+  const d=await r.json();
+  if(!r.ok||!d.ok){showToast(d.error||'删除失败');return;}
+  showToast('已删除');
+  loadUserRoutes();
+}
+async function speedtestUserRoute(prefixValue){
+  const prefix=decodeURIComponent(prefixValue||'');
+  showToast('测速中...');
+  const r=await fetch('/api/user/speedtest/routes?prefix='+encodeURIComponent(prefix),{method:'POST'});
+  const d=await r.json();
+  if(!r.ok||!d.ok){showToast(d.error||'测速失败');return;}
+  const ok=(d.results||[]).filter(function(x){return x.latency>=0;}).length;
+  showToast('测速完成，'+ok+'条线路可用');
+  loadUserRoutes();
+}
 loadDomains();
+loadUserRoutes();
 </script></div></body></html>`;
 }
 
@@ -435,7 +606,8 @@ function databaseSchemaStatements(env) {
       prefix TEXT PRIMARY KEY, target TEXT NOT NULL,
       remark TEXT DEFAULT '', last_play TEXT DEFAULT '',
       cache_img TEXT DEFAULT 'on', compat_mode TEXT DEFAULT 'off',
-      sort_order INTEGER DEFAULT 0, target_latencies TEXT DEFAULT '')`),
+      sort_order INTEGER DEFAULT 0, target_latencies TEXT DEFAULT '',
+      user_id INTEGER DEFAULT NULL)`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS visitor_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT, prefix TEXT,
       timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, ip TEXT, country TEXT, ua TEXT)`),
@@ -484,6 +656,7 @@ async function createDatabaseTables(env) {
   ]);
   try { await env.DB.exec(`ALTER TABLE routes ADD COLUMN target_latencies TEXT DEFAULT ''`); } catch(e) {}
   try { await env.DB.exec(`ALTER TABLE routes ADD COLUMN compat_mode TEXT DEFAULT 'off'`); } catch(e) {}
+  try { await env.DB.exec(`ALTER TABLE routes ADD COLUMN user_id INTEGER DEFAULT NULL`); } catch(e) {}
   try { await env.DB.exec(`ALTER TABLE invite_codes ADD COLUMN used_at DATETIME DEFAULT NULL`); } catch(e) {}
   try { await env.DB.exec(`ALTER TABLE user_domains ADD COLUMN dns_record_id TEXT DEFAULT ''`); } catch(e) {}
   try { await env.DB.exec(`ALTER TABLE user_domains ADD COLUMN dns_record_type TEXT DEFAULT ''`); } catch(e) {}
@@ -594,6 +767,29 @@ async function speedtestRouteTargets(env, prefix) {
   }
   await env.DB.prepare('UPDATE routes SET target_latencies = ? WHERE prefix = ?')
     .bind(JSON.stringify(latencies), prefix).run();
+  out.sort((a, b) => {
+    if (a.latency < 0 && b.latency < 0) return 0;
+    if (a.latency < 0) return 1;
+    if (b.latency < 0) return -1;
+    return a.latency - b.latency;
+  });
+  return out;
+}
+
+async function speedtestUserRouteTargets(env, prefix, userId) {
+  const route = await env.DB.prepare('SELECT * FROM routes WHERE prefix = ? AND user_id = ?')
+    .bind(prefix, userId).first();
+  if (!route) return null;
+  const targets = route.target.split(',').map(s => s.trim()).filter(Boolean);
+  const latencies = {};
+  const out = [];
+  for (const t of targets) {
+    const ms = await speedtestUrl(t);
+    latencies[t] = ms;
+    out.push({ url: t, latency: ms, status: latencyStatus(ms) });
+  }
+  await env.DB.prepare('UPDATE routes SET target_latencies = ? WHERE prefix = ? AND user_id = ?')
+    .bind(JSON.stringify(latencies), prefix, userId).run();
   out.sort((a, b) => {
     if (a.latency < 0 && b.latency < 0) return 0;
     if (a.latency < 0) return 1;
@@ -727,6 +923,113 @@ function validatePrefix(prefix) {
   return null;
 }
 
+function normalizeRouteTarget(value) {
+  const targets = String(value || '').split(',').map((s) => s.trim().replace(/\/+$/, '')).filter(Boolean);
+  if (!targets.length) return { error: '请至少填写一个主线路地址' };
+  for (const target of targets) {
+    try {
+      const parsed = new URL(target);
+      if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) {
+        return { error: `目标线路格式无效：${target}` };
+      }
+    } catch (_) {
+      return { error: `目标线路格式无效：${target}` };
+    }
+  }
+  return { value: targets.join(',') };
+}
+
+async function handleUserRouteApi(request, env, url, user) {
+  if (url.pathname === '/api/user/routes') {
+    if (request.method === 'GET') {
+      const { results } = await env.DB.prepare(
+        'SELECT * FROM routes WHERE user_id = ? ORDER BY sort_order, prefix'
+      ).bind(user.id).all();
+      return json({ ok: true, routes: results || [] });
+    }
+
+    if (request.method === 'POST') {
+      const data = await request.json().catch(() => ({}));
+      const err = validatePrefix(data.prefix);
+      if (err) return json({ error: err }, 400);
+      const prefix = normalizePrefix(data.prefix);
+      const targetResult = normalizeRouteTarget(data.target);
+      if (targetResult.error) return json({ error: targetResult.error }, 400);
+      const remark = String(data.remark || '').trim().slice(0, 200);
+      const cacheImg = data.cache_img === 'off' ? 'off' : 'on';
+      const compatMode = data.compat_mode === 'on' ? 'on' : 'off';
+      const oldPrefix = normalizePrefix(data.oldPrefix);
+
+      try {
+        if (oldPrefix && oldPrefix !== prefix) {
+          const current = await env.DB.prepare(
+            'SELECT sort_order FROM routes WHERE prefix = ? AND user_id = ?'
+          ).bind(oldPrefix, user.id).first();
+          if (!current) return json({ error: '原路由不存在或不属于当前用户' }, 404);
+          const conflict = await env.DB.prepare(
+            'SELECT prefix FROM routes WHERE prefix = ?'
+          ).bind(prefix).first();
+          if (conflict) return json({ error: '该路径已被使用，请换一个路径' }, 409);
+          await env.DB.batch([
+            env.DB.prepare('DELETE FROM routes WHERE prefix = ? AND user_id = ?').bind(oldPrefix, user.id),
+            env.DB.prepare(
+              `INSERT INTO routes
+               (prefix, target, remark, cache_img, compat_mode, sort_order, target_latencies, user_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+            ).bind(prefix, targetResult.value, remark, cacheImg, compatMode, current.sort_order || 0, '', user.id),
+          ]);
+        } else {
+          const current = await env.DB.prepare(
+            'SELECT sort_order, user_id FROM routes WHERE prefix = ?'
+          ).bind(prefix).first();
+          if (current && Number(current.user_id) !== Number(user.id)) {
+            return json({ error: '该路径已被使用，请换一个路径' }, 409);
+          }
+          if (current) {
+            await env.DB.prepare(
+              `UPDATE routes SET target = ?, remark = ?, cache_img = ?, compat_mode = ?,
+               target_latencies = '' WHERE prefix = ? AND user_id = ?`
+            ).bind(targetResult.value, remark, cacheImg, compatMode, prefix, user.id).run();
+          } else {
+            await env.DB.prepare(
+              `INSERT INTO routes
+               (prefix, target, remark, cache_img, compat_mode, sort_order, target_latencies, user_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+            ).bind(prefix, targetResult.value, remark, cacheImg, compatMode, 0, '', user.id).run();
+          }
+        }
+        return json({ ok: true });
+      } catch (e) {
+        if (String(e?.message || '').toLowerCase().includes('unique')) {
+          return json({ error: '该路径已被使用，请换一个路径' }, 409);
+        }
+        console.error('User route save failed:', e);
+        return json({ error: '路由保存失败，请稍后重试' }, 500);
+      }
+    }
+
+    if (request.method === 'DELETE') {
+      const prefix = normalizePrefix(url.searchParams.get('prefix'));
+      if (!prefix) return json({ error: '缺少 prefix 参数' }, 400);
+      const result = await env.DB.prepare(
+        'DELETE FROM routes WHERE prefix = ? AND user_id = ?'
+      ).bind(prefix, user.id).run();
+      if (!result.meta?.changes) return json({ error: '路由不存在或不属于当前用户' }, 404);
+      return json({ ok: true });
+    }
+  }
+
+  if (url.pathname === '/api/user/speedtest/routes' && request.method === 'POST') {
+    const prefix = normalizePrefix(url.searchParams.get('prefix'));
+    if (!prefix) return json({ error: '缺少 prefix 参数' }, 400);
+    const results = await speedtestUserRouteTargets(env, prefix, user.id);
+    if (!results) return json({ error: '路由不存在或不属于当前用户' }, 404);
+    return json({ ok: true, results });
+  }
+
+  return json({ error: 'Not found' }, 404);
+}
+
 async function handleAdminApi(request, env, url) {
   if (!(await hasAdminAccess(request, env))) return new Response('Unauthorized', { status: 401 });
 
@@ -740,19 +1043,27 @@ async function handleAdminApi(request, env, url) {
       const err = validatePrefix(data.prefix);
       if (err) return json({ error: err }, 400);
       const prefix = normalizePrefix(data.prefix);
+      const oldPrefix = normalizePrefix(data.oldPrefix);
       let currentSortOrder = 0;
-      if (data.oldPrefix && data.oldPrefix !== data.prefix) {
-        const oldRow = await env.DB.prepare('SELECT sort_order FROM routes WHERE prefix = ?').bind(normalizePrefix(data.oldPrefix)).first();
-        if (oldRow) currentSortOrder = oldRow.sort_order;
-        await env.DB.prepare('DELETE FROM routes WHERE prefix = ?').bind(normalizePrefix(data.oldPrefix)).run();
+      let currentUserId = null;
+      if (oldPrefix && oldPrefix !== prefix) {
+        const oldRow = await env.DB.prepare('SELECT sort_order, user_id FROM routes WHERE prefix = ?').bind(oldPrefix).first();
+        if (oldRow) {
+          currentSortOrder = oldRow.sort_order;
+          currentUserId = oldRow.user_id ?? null;
+        }
+        await env.DB.prepare('DELETE FROM routes WHERE prefix = ?').bind(oldPrefix).run();
       } else {
-        const oldRow = await env.DB.prepare('SELECT sort_order FROM routes WHERE prefix = ?').bind(prefix).first();
-        if (oldRow) currentSortOrder = oldRow.sort_order;
+        const oldRow = await env.DB.prepare('SELECT sort_order, user_id FROM routes WHERE prefix = ?').bind(prefix).first();
+        if (oldRow) {
+          currentSortOrder = oldRow.sort_order;
+          currentUserId = oldRow.user_id ?? null;
+        }
       }
       await env.DB.prepare(
-        'INSERT OR REPLACE INTO routes (prefix, target, remark, cache_img, compat_mode, sort_order, target_latencies) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        'INSERT OR REPLACE INTO routes (prefix, target, remark, cache_img, compat_mode, sort_order, target_latencies, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
       ).bind(
-        prefix, data.target, data.remark || '', data.cache_img || 'on', data.compat_mode || 'off', currentSortOrder, ''
+        prefix, data.target, data.remark || '', data.cache_img || 'on', data.compat_mode || 'off', currentSortOrder, '', currentUserId
       ).run();
       return json({ success: true });
     }
@@ -822,6 +1133,7 @@ async function handleAdminApi(request, env, url) {
 
     const statements = [];
     if (user) {
+      statements.push(env.DB.prepare('DELETE FROM routes WHERE user_id = ?').bind(user.id));
       statements.push(env.DB.prepare('DELETE FROM user_domains WHERE user_id = ?').bind(user.id));
       statements.push(env.DB.prepare('DELETE FROM users WHERE id = ?').bind(user.id));
     }
@@ -2176,6 +2488,13 @@ export default {
       const u = await getUser(request, env);
       if (!u) return json({ error: '未登录' }, 401);
       return json({ ok: true, username: u.username, role: u.role });
+    }
+
+    if (url.pathname === '/api/user/routes' || url.pathname === '/api/user/speedtest/routes') {
+      if (!env.DB) return json({ error: 'DB 未绑定' }, 500);
+      const u = await getUser(request, env);
+      if (!u) return json({ error: '未登录' }, 401);
+      return handleUserRouteApi(request, env, url, u);
     }
 
     if (url.pathname === '/api/user/domains' && request.method === 'GET') {
