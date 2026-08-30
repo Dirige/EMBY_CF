@@ -275,8 +275,9 @@ function genInviteCode() {
   return s;
 }
 async function signHmac(payload, env) {
-  const key = await crypto.subtle.importKey('raw', TE.encode(getSessionSecret(env)), 'HMAC', false, ['sign']);
-  return bufToHex(await crypto.subtle.sign('HMAC', key, TE.encode(payload)));
+  const algorithm = { name: 'HMAC', hash: 'SHA-256' };
+  const key = await crypto.subtle.importKey('raw', TE.encode(getSessionSecret(env)), algorithm, false, ['sign']);
+  return bufToHex(await crypto.subtle.sign(algorithm, key, TE.encode(payload)));
 }
 async function signSession(userId, env) {
   const exp = Date.now() + SESSION_TTL * 1000;
@@ -2067,6 +2068,7 @@ export default {
         const initialRole = 'user';
         let userId = null;
         let dnsCreated = false;
+        let inviteMarkedUsed = false;
         try {
           const res = await env.DB.prepare('INSERT INTO users (username, password_hash, salt, role) VALUES (?, ?, ?, ?)').bind(username, hash, salt, initialRole).run();
           userId = res.meta.last_row_id;
@@ -2075,16 +2077,24 @@ export default {
           await env.DB.prepare(
             'INSERT INTO user_domains (user_id, subdomain, preferred_host, remark, dns_record_id, dns_record_type) VALUES (?, ?, ?, ?, ?, ?)'
           ).bind(userId, username, dns.host, '注册自动创建', dns.recordId, dns.type).run();
+          const token = await signSession(userId, env);
           const inviteUpdate = await env.DB.prepare(
             "UPDATE invite_codes SET status = 'used', used_by = ?, used_at = CURRENT_TIMESTAMP WHERE code = ? AND status = 'unused'"
           ).bind(userId, invite_code).run();
           if (!inviteUpdate.meta?.changes) throw new Error('邀请码已被其他请求使用，请更换邀请码');
-          const token = await signSession(userId, env);
+          inviteMarkedUsed = true;
           return new Response(JSON.stringify({ ok: true }), {
             status: 200,
             headers: { 'Content-Type': 'application/json', 'Set-Cookie': setSessionCookie(token) },
           });
         } catch (e) {
+          if (inviteMarkedUsed && userId !== null) {
+            try {
+              await env.DB.prepare(
+                "UPDATE invite_codes SET status = 'unused', used_by = NULL, used_at = NULL WHERE code = ? AND used_by = ?"
+              ).bind(invite_code, userId).run();
+            } catch (_) {}
+          }
           if (userId !== null) {
             try { await env.DB.prepare('DELETE FROM user_domains WHERE user_id = ?').bind(userId).run(); } catch (_) {}
             try { await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(userId).run(); } catch (_) {}
