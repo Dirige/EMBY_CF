@@ -261,8 +261,9 @@ function hexToBuf(hex) {
 }
 const TE = new TextEncoder();
 async function hashPassword(pw, salt) {
-  const key = await crypto.subtle.importKey('raw', TE.encode(pw), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: hexToBuf(salt), iterations: 100000, hash: 'SHA-256' }, key, 256);
+  const algorithm = { name: 'PBKDF2', hash: 'SHA-256' };
+  const key = await crypto.subtle.importKey('raw', TE.encode(pw), algorithm, false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ ...algorithm, salt: hexToBuf(salt), iterations: 100000 }, key, 256);
   return bufToHex(bits);
 }
 function genSalt() { return bufToHex(crypto.getRandomValues(new Uint8Array(16))); }
