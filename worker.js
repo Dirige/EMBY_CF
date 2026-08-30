@@ -102,7 +102,7 @@ function getBaseDomain(env) {
 }
 
 function isDnsLabel(value) {
-  return /^[a-z0-9](?:[a-z0-9-]{1,30}[a-z0-9])?$/.test(String(value || ''));
+  return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(String(value || ''));
 }
 
 function isIpv4(value) {
