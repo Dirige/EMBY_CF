@@ -214,7 +214,17 @@ async function doReg(){
   err.textContent='';
   if(!u||!p||!c){err.textContent='请填写完整';return;}
   document.getElementById('regBtn').disabled=true;
-  try{var r=await fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p,invite_code:c})});var d=await r.json();if(d.ok){location.href='/admin';return;}err.textContent=d.error||'注册失败';}catch(e){err.textContent='请求失败:'+e.message;}
+  try{
+    var r=await fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p,invite_code:c})});
+    var text=await r.text();
+    var d;
+    try{d=JSON.parse(text);}catch(parseError){
+      var detail=text.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,160);
+      throw new Error('服务器返回了非 JSON（HTTP '+r.status+'）'+(detail?': '+detail:''));
+    }
+    if(d.ok){location.href='/admin';return;}
+    err.textContent=d.error||'注册失败';
+  }catch(e){err.textContent='请求失败:'+e.message;}
   document.getElementById('regBtn').disabled=false;
 }
 </script></div></body></html>`;
@@ -1678,7 +1688,17 @@ export default {
       });
     }
 
-    if (env.DB) await initDatabase(env);
+    if (env.DB) {
+      try {
+        await initDatabase(env);
+      } catch (e) {
+        console.error('Database initialization failed:', e);
+        if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/admin/api/')) {
+          return json({ ok: false, error: '数据库初始化失败，请检查 D1 绑定和表结构' }, 500);
+        }
+        throw e;
+      }
+    }
 
     if (url.pathname === '/__client_rtt__') {
       return new Response(null, {
@@ -1755,30 +1775,35 @@ export default {
 
     if (url.pathname === '/api/register' && request.method === 'POST') {
       if (!env.DB) return json({ error: 'DB 未绑定' }, 500);
-      const body = await request.json().catch(() => ({}));
-      const username = (body.username || '').trim().toLowerCase();
-      const password = body.password || '';
-      const invite_code = (body.invite_code || '').trim();
-      if (!username || username.length < 3 || username.length > 32 || !/^[a-z0-9_]+$/.test(username)) return json({ error: '用户名需3-32位小写字母数字下划线' }, 400);
-      if (!password || password.length < 6) return json({ error: '密码至少6位' }, 400);
-      if (!invite_code) return json({ error: '请填写邀请码' }, 400);
-      const existing = await env.DB.prepare('SELECT id FROM users WHERE username = ?').bind(username).first();
-      if (existing) return json({ error: '用户名已存在' }, 409);
-      const totalUsers = await env.DB.prepare('SELECT COUNT(*) as c FROM users').first();
-      if (totalUsers && totalUsers.c >= 50) return json({ error: '已达最大用户数(50)' }, 409);
-      const codeRow = await env.DB.prepare("SELECT id FROM invite_codes WHERE code = ? AND status = 'unused'").bind(invite_code).first();
-      if (!codeRow) return json({ error: '邀请码无效或已使用' }, 400);
-      const salt = genSalt();
-      const hash = await hashPassword(password, salt);
-      const initialRole = 'user';
-      const res = await env.DB.prepare('INSERT INTO users (username, password_hash, salt, role) VALUES (?, ?, ?, ?)').bind(username, hash, salt, initialRole).run();
-      const userId = res.meta.last_row_id;
-      await env.DB.prepare("UPDATE invite_codes SET status = 'used', used_by = ? WHERE code = ?").bind(userId, invite_code).run();
-      const token = await signSession(userId, env);
-      return new Response(JSON.stringify({ ok: true }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json', 'Set-Cookie': setSessionCookie(token) },
-      });
+      try {
+        const body = await request.json().catch(() => ({}));
+        const username = (body.username || '').trim().toLowerCase();
+        const password = body.password || '';
+        const invite_code = (body.invite_code || '').trim();
+        if (!username || username.length < 3 || username.length > 32 || !/^[a-z0-9_]+$/.test(username)) return json({ error: '用户名需3-32位小写字母数字下划线' }, 400);
+        if (!password || password.length < 6) return json({ error: '密码至少6位' }, 400);
+        if (!invite_code) return json({ error: '请填写邀请码' }, 400);
+        const existing = await env.DB.prepare('SELECT id FROM users WHERE username = ?').bind(username).first();
+        if (existing) return json({ error: '用户名已存在' }, 409);
+        const totalUsers = await env.DB.prepare('SELECT COUNT(*) as c FROM users').first();
+        if (totalUsers && totalUsers.c >= 50) return json({ error: '已达最大用户数(50)' }, 409);
+        const codeRow = await env.DB.prepare("SELECT id FROM invite_codes WHERE code = ? AND status = 'unused'").bind(invite_code).first();
+        if (!codeRow) return json({ error: '邀请码无效或已使用' }, 400);
+        const salt = genSalt();
+        const hash = await hashPassword(password, salt);
+        const initialRole = 'user';
+        const res = await env.DB.prepare('INSERT INTO users (username, password_hash, salt, role) VALUES (?, ?, ?, ?)').bind(username, hash, salt, initialRole).run();
+        const userId = res.meta.last_row_id;
+        await env.DB.prepare("UPDATE invite_codes SET status = 'used', used_by = ? WHERE code = ?").bind(userId, invite_code).run();
+        const token = await signSession(userId, env);
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json', 'Set-Cookie': setSessionCookie(token) },
+        });
+      } catch (e) {
+        console.error('Registration failed:', e);
+        return json({ ok: false, error: '注册失败：数据库操作异常，请稍后重试' }, 500);
+      }
     }
 
     if (url.pathname === '/api/login' && request.method === 'POST') {
