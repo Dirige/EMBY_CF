@@ -8,7 +8,6 @@ keep_vars = true
 [vars]
 BASE_DOMAIN = "dirige.de5.net"
 ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = ""
 CF_ZONE_ID = ""
 DNS_RECORD_NAME = "emby"
 

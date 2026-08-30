@@ -385,7 +385,7 @@ function buildUserHtml(u, env) {
         </div>
       </div>
     </div>
-    <p class="muted" style="margin:0 0 14px">路由可通过 <code>https://${u.username}.${baseDomain}/路径</code> 访问，路径全站唯一。</p>
+    <p class="muted" style="margin:0 0 14px">路由可通过 <code>https://${u.username}.${baseDomain}/路径</code> 访问，同一个账号内路径不能重复。</p>
     <div id="userRouteList" class="route-grid"><p class="muted">LOADING...</p></div>
   </div>
 </div>
@@ -603,7 +603,8 @@ async function initDatabase(env) {
 function databaseSchemaStatements(env) {
   return [
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS routes (
-      prefix TEXT PRIMARY KEY, target TEXT NOT NULL,
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      prefix TEXT NOT NULL, target TEXT NOT NULL,
       remark TEXT DEFAULT '', last_play TEXT DEFAULT '',
       cache_img TEXT DEFAULT 'on', compat_mode TEXT DEFAULT 'off',
       sort_order INTEGER DEFAULT 0, target_latencies TEXT DEFAULT '',
@@ -657,9 +658,48 @@ async function createDatabaseTables(env) {
   try { await env.DB.exec(`ALTER TABLE routes ADD COLUMN target_latencies TEXT DEFAULT ''`); } catch(e) {}
   try { await env.DB.exec(`ALTER TABLE routes ADD COLUMN compat_mode TEXT DEFAULT 'off'`); } catch(e) {}
   try { await env.DB.exec(`ALTER TABLE routes ADD COLUMN user_id INTEGER DEFAULT NULL`); } catch(e) {}
+  await migrateRoutesTable(env);
+  await createRouteIndexes(env);
   try { await env.DB.exec(`ALTER TABLE invite_codes ADD COLUMN used_at DATETIME DEFAULT NULL`); } catch(e) {}
   try { await env.DB.exec(`ALTER TABLE user_domains ADD COLUMN dns_record_id TEXT DEFAULT ''`); } catch(e) {}
   try { await env.DB.exec(`ALTER TABLE user_domains ADD COLUMN dns_record_type TEXT DEFAULT ''`); } catch(e) {}
+}
+
+async function createRouteIndexes(env) {
+  await env.DB.batch([
+    env.DB.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_routes_user_prefix
+      ON routes(user_id, prefix) WHERE user_id IS NOT NULL`),
+    env.DB.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_routes_global_prefix
+      ON routes(prefix) WHERE user_id IS NULL`),
+  ]);
+}
+
+async function migrateRoutesTable(env) {
+  const info = await env.DB.prepare('PRAGMA table_info(routes)').all();
+  const cols = info.results || [];
+  const prefixCol = cols.find((c) => c.name === 'prefix');
+  const hasId = cols.some((c) => c.name === 'id');
+  const prefixIsPrimaryKey = Boolean(prefixCol?.pk);
+  if (!cols.length || (hasId && !prefixIsPrimaryKey)) return;
+
+  await env.DB.prepare('DROP TABLE IF EXISTS routes_migration_new').run();
+  await env.DB.prepare(`CREATE TABLE routes_migration_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    prefix TEXT NOT NULL, target TEXT NOT NULL,
+    remark TEXT DEFAULT '', last_play TEXT DEFAULT '',
+    cache_img TEXT DEFAULT 'on', compat_mode TEXT DEFAULT 'off',
+    sort_order INTEGER DEFAULT 0, target_latencies TEXT DEFAULT '',
+    user_id INTEGER DEFAULT NULL)`).run();
+  await env.DB.prepare(`INSERT INTO routes_migration_new
+    (prefix, target, remark, last_play, cache_img, compat_mode, sort_order, target_latencies, user_id)
+    SELECT prefix, target,
+      COALESCE(remark, ''), COALESCE(last_play, ''),
+      COALESCE(cache_img, 'on'), COALESCE(compat_mode, 'off'),
+      COALESCE(sort_order, 0), COALESCE(target_latencies, ''),
+      user_id
+    FROM routes`).run();
+  await env.DB.prepare('DROP TABLE routes').run();
+  await env.DB.prepare('ALTER TABLE routes_migration_new RENAME TO routes').run();
 }
 
 async function resetDatabaseTables(env) {
@@ -755,7 +795,7 @@ async function speedtestOptimizedFromEdge() {
 }
 
 async function speedtestRouteTargets(env, prefix) {
-  const route = await env.DB.prepare('SELECT * FROM routes WHERE prefix = ?').bind(prefix).first();
+  const route = await env.DB.prepare('SELECT * FROM routes WHERE prefix = ? AND user_id IS NULL').bind(prefix).first();
   if (!route) return [];
   const targets = route.target.split(',').map(s => s.trim()).filter(Boolean);
   const latencies = {};
@@ -765,7 +805,7 @@ async function speedtestRouteTargets(env, prefix) {
     latencies[t] = ms;
     out.push({ url: t, latency: ms, status: latencyStatus(ms) });
   }
-  await env.DB.prepare('UPDATE routes SET target_latencies = ? WHERE prefix = ?')
+  await env.DB.prepare('UPDATE routes SET target_latencies = ? WHERE prefix = ? AND user_id IS NULL')
     .bind(JSON.stringify(latencies), prefix).run();
   out.sort((a, b) => {
     if (a.latency < 0 && b.latency < 0) return 0;
@@ -800,7 +840,7 @@ async function speedtestUserRouteTargets(env, prefix, userId) {
 }
 
 async function speedtestAllRoutes(env) {
-  const { results: routes } = await env.DB.prepare('SELECT prefix, target FROM routes ORDER BY sort_order, prefix').all();
+  const { results: routes } = await env.DB.prepare('SELECT prefix, target FROM routes WHERE user_id IS NULL ORDER BY sort_order, prefix').all();
   const allResults = {};
   for (const route of routes || []) {
     const targets = route.target.split(',').map(s => s.trim()).filter(Boolean);
@@ -809,7 +849,7 @@ async function speedtestAllRoutes(env) {
       const ms = await speedtestUrl(t);
       latencies[t] = ms;
     }
-    await env.DB.prepare('UPDATE routes SET target_latencies = ? WHERE prefix = ?')
+    await env.DB.prepare('UPDATE routes SET target_latencies = ? WHERE prefix = ? AND user_id IS NULL')
       .bind(JSON.stringify(latencies), route.prefix).run();
     allResults[route.prefix] = Object.entries(latencies).map(([url, latency]) => ({
       url, latency, status: latencyStatus(latency),
@@ -967,9 +1007,9 @@ async function handleUserRouteApi(request, env, url, user) {
           ).bind(oldPrefix, user.id).first();
           if (!current) return json({ error: '原路由不存在或不属于当前用户' }, 404);
           const conflict = await env.DB.prepare(
-            'SELECT prefix FROM routes WHERE prefix = ?'
-          ).bind(prefix).first();
-          if (conflict) return json({ error: '该路径已被使用，请换一个路径' }, 409);
+            'SELECT prefix FROM routes WHERE prefix = ? AND user_id = ?'
+          ).bind(prefix, user.id).first();
+          if (conflict) return json({ error: '你的账号里已存在该路径，请换一个路径' }, 409);
           await env.DB.batch([
             env.DB.prepare('DELETE FROM routes WHERE prefix = ? AND user_id = ?').bind(oldPrefix, user.id),
             env.DB.prepare(
@@ -980,11 +1020,8 @@ async function handleUserRouteApi(request, env, url, user) {
           ]);
         } else {
           const current = await env.DB.prepare(
-            'SELECT sort_order, user_id FROM routes WHERE prefix = ?'
-          ).bind(prefix).first();
-          if (current && Number(current.user_id) !== Number(user.id)) {
-            return json({ error: '该路径已被使用，请换一个路径' }, 409);
-          }
+            'SELECT sort_order FROM routes WHERE prefix = ? AND user_id = ?'
+          ).bind(prefix, user.id).first();
           if (current) {
             await env.DB.prepare(
               `UPDATE routes SET target = ?, remark = ?, cache_img = ?, compat_mode = ?,
@@ -1001,7 +1038,7 @@ async function handleUserRouteApi(request, env, url, user) {
         return json({ ok: true });
       } catch (e) {
         if (String(e?.message || '').toLowerCase().includes('unique')) {
-          return json({ error: '该路径已被使用，请换一个路径' }, 409);
+          return json({ error: '你的账号里已存在该路径，请换一个路径' }, 409);
         }
         console.error('User route save failed:', e);
         return json({ error: '路由保存失败，请稍后重试' }, 500);
@@ -1035,7 +1072,7 @@ async function handleAdminApi(request, env, url) {
 
   if (url.pathname === '/admin/api/routes') {
     if (request.method === 'GET') {
-      const { results } = await env.DB.prepare('SELECT * FROM routes ORDER BY sort_order, prefix').all();
+      const { results } = await env.DB.prepare('SELECT * FROM routes WHERE user_id IS NULL ORDER BY sort_order, prefix').all();
       return json(results || []);
     }
     if (request.method === 'POST') {
@@ -1045,32 +1082,29 @@ async function handleAdminApi(request, env, url) {
       const prefix = normalizePrefix(data.prefix);
       const oldPrefix = normalizePrefix(data.oldPrefix);
       let currentSortOrder = 0;
-      let currentUserId = null;
       if (oldPrefix && oldPrefix !== prefix) {
-        const oldRow = await env.DB.prepare('SELECT sort_order, user_id FROM routes WHERE prefix = ?').bind(oldPrefix).first();
+        const oldRow = await env.DB.prepare('SELECT sort_order FROM routes WHERE prefix = ? AND user_id IS NULL').bind(oldPrefix).first();
         if (oldRow) {
           currentSortOrder = oldRow.sort_order;
-          currentUserId = oldRow.user_id ?? null;
         }
-        await env.DB.prepare('DELETE FROM routes WHERE prefix = ?').bind(oldPrefix).run();
+        await env.DB.prepare('DELETE FROM routes WHERE prefix = ? AND user_id IS NULL').bind(oldPrefix).run();
       } else {
-        const oldRow = await env.DB.prepare('SELECT sort_order, user_id FROM routes WHERE prefix = ?').bind(prefix).first();
+        const oldRow = await env.DB.prepare('SELECT sort_order FROM routes WHERE prefix = ? AND user_id IS NULL').bind(prefix).first();
         if (oldRow) {
           currentSortOrder = oldRow.sort_order;
-          currentUserId = oldRow.user_id ?? null;
         }
       }
       await env.DB.prepare(
         'INSERT OR REPLACE INTO routes (prefix, target, remark, cache_img, compat_mode, sort_order, target_latencies, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
       ).bind(
-        prefix, data.target, data.remark || '', data.cache_img || 'on', data.compat_mode || 'off', currentSortOrder, '', currentUserId
+        prefix, data.target, data.remark || '', data.cache_img || 'on', data.compat_mode || 'off', currentSortOrder, '', null
       ).run();
       return json({ success: true });
     }
     if (request.method === 'DELETE') {
       const prefix = url.searchParams.get('prefix');
       if (!prefix) return json({ error: '缺少 prefix 参数' }, 400);
-      await env.DB.prepare('DELETE FROM routes WHERE prefix = ?').bind(normalizePrefix(prefix)).run();
+      await env.DB.prepare('DELETE FROM routes WHERE prefix = ? AND user_id IS NULL').bind(normalizePrefix(prefix)).run();
       return json({ success: true });
     }
   }
@@ -1178,22 +1212,33 @@ async function handleAdminApi(request, env, url) {
   return json({ error: 'Not found' }, 404);
 }
 
-async function resolveProxyTarget(request, env, url) {
+async function resolveProxyTarget(request, env, url, userId = null) {
   const decodedPath = decodeURIComponent(url.pathname);
   let upstreamUrls = [];
   let enableCache = true;
   let compatMode = false;
   let matchedPrefix = null;
+  let matchedRouteId = null;
+  let matchedUserId = null;
   let needsSpeedTest = false;
 
   const pathParts = decodedPath.split('/').filter(Boolean);
   const prefix = normalizeAlias(pathParts[0]);
   if (!prefix) return { error: new Response('Not Found', { status: 404 }) };
 
-  const route = await env.DB.prepare('SELECT * FROM routes WHERE prefix = ?').bind(prefix).first();
+  let route = null;
+  if (userId !== null && userId !== undefined) {
+    route = await env.DB.prepare('SELECT * FROM routes WHERE prefix = ? AND user_id = ?')
+      .bind(prefix, userId).first();
+  }
+  if (!route) {
+    route = await env.DB.prepare('SELECT * FROM routes WHERE prefix = ? AND user_id IS NULL').bind(prefix).first();
+  }
   if (!route) return { error: new Response('404: 节点不存在', { status: 404 }) };
 
   matchedPrefix = route.prefix;
+  matchedRouteId = route.id || null;
+  matchedUserId = route.user_id ?? null;
   enableCache = route.cache_img !== 'off';
   compatMode = route.compat_mode === 'on';
   const remainingPath = '/' + pathParts.slice(1).join('/');
@@ -1224,7 +1269,7 @@ async function resolveProxyTarget(request, env, url) {
     upstreamUrls = targetUrls.map(t => t.replace(/\/+$/, '') + remainingPath + url.search);
   }
 
-  return { upstreamUrls, enableCache, compatMode, matchedPrefix, needsSpeedTest };
+  return { upstreamUrls, enableCache, compatMode, matchedPrefix, matchedRouteId, matchedUserId, needsSpeedTest };
 }
 
 function normalizeAlias(a) {
@@ -1232,13 +1277,25 @@ function normalizeAlias(a) {
 }
 
 async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
-  const { enableCache = true, compatMode = false, matchedPrefix = null, needsSpeedTest = false, preferredHost = null } = opts;
+  const {
+    enableCache = true,
+    compatMode = false,
+    matchedPrefix = null,
+    matchedRouteId = null,
+    matchedUserId = null,
+    needsSpeedTest = false,
+    preferredHost = null,
+  } = opts;
   const proxyOrigin = new URL(request.url).origin;
 
   if (!upstreamUrls.length) return new Response('404: Target empty', { status: 404 });
 
   if (needsSpeedTest && matchedPrefix && env.DB && ctx?.waitUntil) {
-    ctx.waitUntil(speedtestRouteTargets(env, matchedPrefix));
+    if (matchedUserId !== null && matchedUserId !== undefined) {
+      ctx.waitUntil(speedtestUserRouteTargets(env, matchedPrefix, matchedUserId));
+    } else {
+      ctx.waitUntil(speedtestRouteTargets(env, matchedPrefix));
+    }
   }
 
   let firstUpstreamUrl;
@@ -1265,9 +1322,17 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
     const clientCountry = request.headers.get('cf-ipcountry') || 'Unknown';
     const clientUa = request.headers.get('User-Agent') || 'Unknown';
     try {
+      let updateRouteStmt;
+      if (matchedRouteId) {
+        updateRouteStmt = env.DB.prepare(`UPDATE routes SET last_play = ? WHERE id = ?`).bind(nowTime, matchedRouteId);
+      } else if (matchedUserId !== null && matchedUserId !== undefined) {
+        updateRouteStmt = env.DB.prepare(`UPDATE routes SET last_play = ? WHERE prefix = ? AND user_id = ?`).bind(nowTime, matchedPrefix, matchedUserId);
+      } else {
+        updateRouteStmt = env.DB.prepare(`UPDATE routes SET last_play = ? WHERE prefix = ? AND user_id IS NULL`).bind(nowTime, matchedPrefix);
+      }
       ctx.waitUntil(env.DB.batch([
         env.DB.prepare(`INSERT INTO request_stats (prefix, date, count) VALUES (?, ?, 1) ON CONFLICT(prefix, date) DO UPDATE SET count = count + 1`).bind(matchedPrefix, todayStr),
-        env.DB.prepare(`UPDATE routes SET last_play = ? WHERE prefix = ?`).bind(nowTime, matchedPrefix),
+        updateRouteStmt,
         env.DB.prepare(`INSERT INTO visitor_logs (prefix, ip, country, ua) VALUES (?, ?, ?, ?)`).bind(matchedPrefix, clientIp, clientCountry, clientUa),
       ]));
     } catch(_) {}
@@ -2572,14 +2637,16 @@ export default {
     if (baseDomain && hostname.endsWith('.' + baseDomain) && hostname !== baseDomain) {
       const subdomain = hostname.slice(0, hostname.length - ('.' + baseDomain).length);
       if (subdomain && subdomain.length >= 1 && subdomain.length <= 32 && /^[a-z0-9-]+$/.test(subdomain) && env.DB) {
-        const row = await env.DB.prepare("SELECT subdomain, preferred_host, remark, status FROM user_domains WHERE subdomain = ?").bind(subdomain).first();
+        const row = await env.DB.prepare("SELECT user_id, subdomain, preferred_host, remark, status FROM user_domains WHERE subdomain = ?").bind(subdomain).first();
         if (row && row.status === 'active') {
-          const resolved = await resolveProxyTarget(request, env, url);
+          const resolved = await resolveProxyTarget(request, env, url, row.user_id);
           if (resolved.error) return resolved.error;
           return proxyDirectUrl(request, env, ctx, resolved.upstreamUrls, {
             enableCache: resolved.enableCache,
             compatMode: resolved.compatMode,
             matchedPrefix: resolved.matchedPrefix,
+            matchedRouteId: resolved.matchedRouteId,
+            matchedUserId: resolved.matchedUserId,
             needsSpeedTest: resolved.needsSpeedTest,
             preferredHost: row.preferred_host,
           });
@@ -2616,6 +2683,8 @@ export default {
       enableCache: resolved.enableCache,
       compatMode: resolved.compatMode,
       matchedPrefix: resolved.matchedPrefix,
+      matchedRouteId: resolved.matchedRouteId,
+      matchedUserId: resolved.matchedUserId,
       needsSpeedTest: resolved.needsSpeedTest,
     });
   },
