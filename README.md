@@ -183,7 +183,7 @@ wrangler deploy --dry-run     # 无需 Node 版本要求
 
 ## 交流反馈 <sub>CONTACT</sub>
 
-- Telegram：<https://t.me/Dirige_Proxy>
+- Telegram：<https://t.me/+7cbXthaBajszNjI1>
 
 ## 许可证 <sub>LICENSE</sub>
 
