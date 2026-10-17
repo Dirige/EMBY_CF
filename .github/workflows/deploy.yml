@@ -102,7 +102,11 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
           echo "🔍 尝试获取已有数据库 ID..."
-          LIST_RESPONSE=$(wrangler d1 list 2>&1)
+          if ! LIST_RESPONSE=$(wrangler d1 list 2>&1); then
+            echo "❌ wrangler d1 list 查询失败，Cloudflare 返回的完整内容如下："
+            echo "$LIST_RESPONSE"
+            exit 1
+          fi
           echo "$LIST_RESPONSE"
           DATABASE_ID=$(echo "$LIST_RESPONSE" | grep "emby-proxy-db" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
 
@@ -111,7 +115,11 @@ jobs:
             echo "DATABASE_ID=$DATABASE_ID" >> $GITHUB_OUTPUT
           else
             echo "📦 数据库不存在，正在创建..."
-            CREATE_RESPONSE=$(wrangler d1 create emby-proxy-db 2>&1)
+            if ! CREATE_RESPONSE=$(wrangler d1 create emby-proxy-db 2>&1); then
+              echo "❌ wrangler d1 create 失败，Cloudflare 返回的完整内容如下："
+              echo "$CREATE_RESPONSE"
+              exit 1
+            fi
             echo "$CREATE_RESPONSE"
             DATABASE_ID=$(echo "$CREATE_RESPONSE" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
             if [ -n "$DATABASE_ID" ]; then
