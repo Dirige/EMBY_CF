@@ -206,7 +206,7 @@ async function replaceUserDnsRecord(env, subdomain, target) {
       name: fullName,
       content: normalizedTarget,
       ttl: 1,
-      proxied: true,
+      proxied: false,
     }),
   });
   return { host: normalizedTarget, type, name: fullName, recordId: data.result?.id || '' };
@@ -1768,7 +1768,10 @@ function buildFrontendHtml() {
           <div class="brand-sub">Cloudflare Edge · Intelligent Routing</div>
         </div>
       </div>
-      <a href="/admin" class="btn btn-outline">控制台</a>
+      <div style="display:flex;gap:10px;align-items:center">
+        <a href="https://t.me/+7cbXthaBajszNjI1" target="_blank" rel="noopener" class="btn btn-outline btn-sm">交流反馈</a>
+        <a href="/admin" class="btn btn-outline">控制台</a>
+      </div>
     </div>
   </div>
   <div class="card">
