@@ -1232,6 +1232,7 @@ function normalizeRouteTarget(value) {
 }
 
 async function handleUserRouteApi(request, env, url, user) {
+  if (!user || !user.id) return json({ error: '未登录或登录已过期' }, 401);
   if (url.pathname === '/api/user/routes') {
     if (request.method === 'GET') {
       const { results } = await env.DB.prepare(
