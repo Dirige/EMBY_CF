@@ -97,7 +97,11 @@ Cloudflare 控制台 → 你的根域名管理页 → 右侧边栏 `Zone ID`，�
 | `CF_DOMAIN` | ✅ | `fd.example.com` | 你的反代域名；旧仓库也可继续用 `BASE_DOMAIN` |
 | `CF_ZONE_ID` | ✅ | 32 位十六进制 | 根域名所在 Zone ID |
 | `CF_DNS_API_TOKEN` | ⚪ | Token | DNS 专用 Token；不填则复用 `CF_API_TOKEN` |
+| `CF_D1_ID` | ⚪ | UUID | 已有 D1 数据库 ID；填写后跳过自动查询。Token 没有 D1 权限时建议填写 |
 | `CF_WORKER_NAME` | ⚪ | `fd` | Worker 名称，不填默认 `fd` |
+
+> [!NOTE]
+> 如果 `CF_API_TOKEN` 没有 `D1` 权限，工作流在查询数据库时会失败。此时在 Cloudflare 控制台 → `Storage & databases` → `D1 SQL Database` 打开已有数据库，复制数据库 ID，添加到 GitHub Secrets 的 `CF_D1_ID` 即可跳过查询。
 
 > [!IMPORTANT]
 > GitHub Secrets 只用于**部署**（创建 D1、配置路由、发布 Worker）。Worker **运行时**读取的变量需要在 Cloudflare 控制台单独配置，见「05 · 运行时环境变量」。
@@ -369,6 +373,7 @@ wrangler deploy
 | 日报没有收到 | 推送变量未填或机器人未启动 | 检查 `TG_*` / `BARK_KEY`，先给机器人发 `/start` |
 | Bark 收不到 | Key 填错或级别不支持 | 检查 `BARK_KEY`，`BARK_LEVEL` 只用规定值 |
 | D1 表为空或结构异常 | 初始化中断 | 管理员后台「重置数据库」 |
+| Actions 在「获取或创建 D1 数据库」失败 | Token 没有 D1 权限 | 添加 `CF_D1_ID` Secret，或给 Token 增加 `Account → D1 → Edit` |
 | push 后意外触发部署 | 工作流绑定 push 触发 | Actions 页禁用工作流 |
 
 ## 13 · 安全建议

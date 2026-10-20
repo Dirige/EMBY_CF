@@ -68,6 +68,12 @@ jobs:
           else
             echo "✅ CF_DNS_API_TOKEN"
           fi
+
+          if [ -z "${{ secrets.CF_D1_ID }}" ]; then
+            echo "⚪ CF_D1_ID - 已有 D1 数据库 ID（可选，填写后跳过 D1 查询）"
+          else
+            echo "✅ CF_D1_ID"
+          fi
           
           echo ""
           if [ "$MISSING" = "true" ]; then
@@ -104,11 +110,22 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_D1_ID: ${{ secrets.CF_D1_ID }}
         run: |
+          if [ -n "$CF_D1_ID" ]; then
+            echo "✅ 使用 CF_D1_ID: $CF_D1_ID"
+            echo "DATABASE_ID=$CF_D1_ID" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
           echo "🔍 尝试获取已有数据库 ID..."
           if ! LIST_RESPONSE=$(wrangler d1 list 2>&1); then
             echo "❌ wrangler d1 list 查询失败，Cloudflare 返回的完整内容如下："
             echo "$LIST_RESPONSE"
+            echo ""
+            echo "处理方法（二选一）："
+            echo "1. 给 CF_API_TOKEN 增加 Account → D1 → Edit 权限；"
+            echo "2. 在 GitHub Secrets 添加 CF_D1_ID（Cloudflare 控制台中的 D1 数据库 ID）。"
             exit 1
           fi
           echo "$LIST_RESPONSE"
@@ -122,6 +139,10 @@ jobs:
             if ! CREATE_RESPONSE=$(wrangler d1 create fd 2>&1); then
               echo "❌ wrangler d1 create 失败，Cloudflare 返回的完整内容如下："
               echo "$CREATE_RESPONSE"
+              echo ""
+              echo "处理方法（二选一）："
+              echo "1. 给 CF_API_TOKEN 增加 Account → D1 → Edit 权限；"
+              echo "2. 在 Cloudflare 控制台手动创建 D1，并把数据库 ID 添加到 GitHub Secrets 的 CF_D1_ID。"
               exit 1
             fi
             echo "$CREATE_RESPONSE"
@@ -130,8 +151,8 @@ jobs:
               echo "✅ 数据库创建成功，ID: $DATABASE_ID"
               echo "DATABASE_ID=$DATABASE_ID" >> $GITHUB_OUTPUT
             else
-              echo "⚠️ 未获取到数据库 ID，将使用默认配置"
-              echo "DATABASE_ID=" >> $GITHUB_OUTPUT
+              echo "❌ 未获取到数据库 ID，请手动创建 D1 并添加 CF_D1_ID"
+              exit 1
             fi
           fi
 
@@ -151,6 +172,10 @@ jobs:
           if [ -n "${{ steps.get-db-id.outputs.DATABASE_ID }}" ]; then
             sed -i "s|^database_id = .*|database_id = \"${{ steps.get-db-id.outputs.DATABASE_ID }}\"|g" wrangler.toml
             echo "   DATABASE_ID: ${{ steps.get-db-id.outputs.DATABASE_ID }}"
+          else
+            echo "❌ 未获取到 D1 数据库 ID，已停止部署。"
+            echo "   请在 GitHub Secrets 添加 CF_D1_ID，或给 CF_API_TOKEN 增加 D1 权限。"
+            exit 1
           fi
 
       - name: 配置 Worker DNS 编辑令牌
