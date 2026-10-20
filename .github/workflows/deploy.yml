@@ -16,11 +16,15 @@ jobs:
     steps:
       - name: 检查必需 Secrets
         id: check
+        env:
+          CF_DOMAIN: ${{ secrets.CF_DOMAIN }}
+          BASE_DOMAIN: ${{ secrets.BASE_DOMAIN }}
         run: |
           echo "🔍 检查必需的 GitHub Secrets..."
           echo ""
           
           MISSING=""
+          DOMAIN="${CF_DOMAIN:-$BASE_DOMAIN}"
           
           if [ -z "${{ secrets.CF_API_TOKEN }}" ]; then
             echo "❌ CF_API_TOKEN - Cloudflare API Token (必需)"
@@ -36,18 +40,18 @@ jobs:
             echo "✅ CF_ACCOUNT_ID"
           fi
           
-          if [ -z "${{ secrets.BASE_DOMAIN }}" ]; then
-            echo "❌ BASE_DOMAIN - 你的域名 (必需)"
+          if [ -z "$DOMAIN" ]; then
+            echo "❌ CF_DOMAIN（或旧名 BASE_DOMAIN）- 你的反代域名 (必需)"
             MISSING="true"
           else
-            echo "✅ BASE_DOMAIN = ${{ secrets.BASE_DOMAIN }}"
+            echo "✅ CF_DOMAIN = $DOMAIN"
           fi
           
           echo ""
           echo "--- 可选变量 ---"
           
           if [ -z "${{ secrets.CF_WORKER_NAME }}" ]; then
-            echo "⚪ CF_WORKER_NAME - Worker名称 (可选，默认: emby-proxy)"
+            echo "⚪ CF_WORKER_NAME - Worker名称 (可选，默认: fd)"
           else
             echo "✅ CF_WORKER_NAME = ${{ secrets.CF_WORKER_NAME }}"
           fi
@@ -108,14 +112,14 @@ jobs:
             exit 1
           fi
           echo "$LIST_RESPONSE"
-          DATABASE_ID=$(echo "$LIST_RESPONSE" | grep "emby-proxy-db" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
+          DATABASE_ID=$(echo "$LIST_RESPONSE" | grep -w "fd" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
 
           if [ -n "$DATABASE_ID" ]; then
             echo "✅ 找到已有数据库 ID: $DATABASE_ID"
             echo "DATABASE_ID=$DATABASE_ID" >> $GITHUB_OUTPUT
           else
             echo "📦 数据库不存在，正在创建..."
-            if ! CREATE_RESPONSE=$(wrangler d1 create emby-proxy-db 2>&1); then
+            if ! CREATE_RESPONSE=$(wrangler d1 create fd 2>&1); then
               echo "❌ wrangler d1 create 失败，Cloudflare 返回的完整内容如下："
               echo "$CREATE_RESPONSE"
               exit 1
@@ -137,21 +141,15 @@ jobs:
           
           WORKER_NAME="${{ secrets.CF_WORKER_NAME }}"
           if [ -z "$WORKER_NAME" ]; then
-            WORKER_NAME="emby-proxy"
+            WORKER_NAME="fd"
           fi
-          sed -i "s/name = \"emby-proxy\"/name = \"$WORKER_NAME\"/g" wrangler.toml
+          sed -i "s/^name = .*/name = \"$WORKER_NAME\"/" wrangler.toml
+          # 运行变量（CF_DOMAIN / CF_ZONE_ID / ADMIN_TOKEN 等）统一在 Cloudflare 控制台配置，
+          # 不写入 wrangler.toml，避免部署时覆盖控制台里已修正的值。
           echo "   Worker 名称: $WORKER_NAME"
-          
-          sed -i "s|^BASE_DOMAIN = .*|BASE_DOMAIN = \"${{ secrets.BASE_DOMAIN }}\"|g" wrangler.toml
-          echo "   BASE_DOMAIN: ${{ secrets.BASE_DOMAIN }}"
-          
-          if [ -n "${{ secrets.CF_ZONE_ID }}" ]; then
-            sed -i "s|CF_ZONE_ID = \"\"|CF_ZONE_ID = \"${{ secrets.CF_ZONE_ID }}\"|g" wrangler.toml
-            echo "   CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}"
-          fi
-          
+
           if [ -n "${{ steps.get-db-id.outputs.DATABASE_ID }}" ]; then
-            sed -i "s|database_id = \"5f966506-c2c9-46b0-8f85-9c6ba639c568\"|database_id = \"${{ steps.get-db-id.outputs.DATABASE_ID }}\"|g" wrangler.toml
+            sed -i "s|^database_id = .*|database_id = \"${{ steps.get-db-id.outputs.DATABASE_ID }}\"|g" wrangler.toml
             echo "   DATABASE_ID: ${{ steps.get-db-id.outputs.DATABASE_ID }}"
           fi
 
@@ -184,18 +182,24 @@ jobs:
           CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CF_WORKER_NAME: ${{ secrets.CF_WORKER_NAME }}
+          CF_DOMAIN: ${{ secrets.CF_DOMAIN }}
           BASE_DOMAIN: ${{ secrets.BASE_DOMAIN }}
         run: |
           echo "🌐 配置 Worker 路由..."
 
           if [ -z "$CF_WORKER_NAME" ]; then
-            CF_WORKER_NAME="emby-proxy"
+            CF_WORKER_NAME="fd"
           fi
 
-          PUBLIC_ENTRY_DOMAIN="$BASE_DOMAIN"
-          USER_BASE_DOMAIN="${BASE_DOMAIN#*.}"
-          if [ "$PUBLIC_ENTRY_DOMAIN" = "$USER_BASE_DOMAIN" ] || [ -z "$USER_BASE_DOMAIN" ]; then
-            echo "❌ BASE_DOMAIN 必须填写完整公共入口，例如 fd.example.com"
+          PUBLIC_ENTRY_DOMAIN="${CF_DOMAIN:-$BASE_DOMAIN}"
+          LABEL_COUNT=$(echo "$PUBLIC_ENTRY_DOMAIN" | awk -F. '{print NF}')
+          if [ "$LABEL_COUNT" -ge 3 ]; then
+            USER_BASE_DOMAIN="${PUBLIC_ENTRY_DOMAIN#*.}"
+          else
+            USER_BASE_DOMAIN="$PUBLIC_ENTRY_DOMAIN"
+          fi
+          if [ "$LABEL_COUNT" -lt 2 ] || [ -z "$USER_BASE_DOMAIN" ]; then
+            echo "❌ CF_DOMAIN 至少是两段域名，例如 example.com 或 fd.example.com"
             exit 1
           fi
 
@@ -243,16 +247,19 @@ jobs:
         env:
           CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_DOMAIN: ${{ secrets.CF_DOMAIN }}
           BASE_DOMAIN: ${{ secrets.BASE_DOMAIN }}
         run: |
           echo "📝 创建 DNS 记录..."
 
-          FULL_RECORD_NAME="$BASE_DOMAIN"
-          TARGET_DOMAIN="${BASE_DOMAIN#*.}"
-          if [ "$FULL_RECORD_NAME" = "$TARGET_DOMAIN" ] || [ -z "$TARGET_DOMAIN" ]; then
-            echo "❌ BASE_DOMAIN 必须填写完整公共入口，例如 fd.example.com"
-            exit 1
+          PUBLIC_ENTRY_DOMAIN="${CF_DOMAIN:-$BASE_DOMAIN}"
+          FULL_RECORD_NAME="$PUBLIC_ENTRY_DOMAIN"
+          LABEL_COUNT=$(echo "$PUBLIC_ENTRY_DOMAIN" | awk -F. '{print NF}')
+          if [ "$LABEL_COUNT" -lt 3 ]; then
+            echo "⚪ $PUBLIC_ENTRY_DOMAIN 是两段根域名，跳过自动 CNAME；请在 Cloudflare 控制台手动配置 DNS"
+            exit 0
           fi
+          TARGET_DOMAIN="${PUBLIC_ENTRY_DOMAIN#*.}"
 
           echo "   DNS 记录: $FULL_RECORD_NAME"
 

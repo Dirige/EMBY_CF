@@ -1,4 +1,4 @@
-const CURRENT_VERSION = '3.3-multiuser-dns';
+const CURRENT_VERSION = '3.10-multiuser-env-compat';
 
 const OPTIMIZED_DOMAINS = [
   { subdomain: '', domain: 'cf.090227.xyz', name: 'CF优选-090227' },
@@ -28,11 +28,8 @@ const MANUAL_REDIRECT_DOMAINS = [
   'xiaoya.pro', 'myqcloud.com', 'cloudfront.net', 'akamaized.net', 'fastly.net', 'hwcdn.net', 'bytecdn.cn', 'bdcdn.net',
 ];
 
-const DOMAIN_PROXY_RULES = { 'biliblili.uk': 'example.com' };
-const JP_COLOS = ['NRT', 'KIX', 'FUK', 'OKA'];
-
 const blocker = {
-  keys: ['.m3u8', '.ts', '.acc', '.m4s', 'photocall.tv', 'googlevideo.com'],
+  keys: ['photocall.tv', 'googlevideo.com'],
   check(url) {
     url = url.toLowerCase();
     return blocker.keys.some((x) => url.includes(x));
@@ -40,17 +37,12 @@ const blocker = {
 };
 
 const CONFIG = {
-  pikpakProxyUrl: 'https://pp.255432.xyz',
   enableStats: true,
   cacheEnabled: true,
   domainCacheTtlMs: 3600000,
 };
 
 const DEFAULT_PREFERRED_HOST = 'youxuan.cf.090227.xyz';
-
-const PIKPAK_DOMAINS = [
-  'pikpak.com', 'pikpak.net', 'pikpak-cn.com', 'pikpakcdn.com', 'pikpakapi.com', 'pikpakdrive.com',
-];
 
 const CORS_JSON = { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*' };
 
@@ -59,6 +51,7 @@ const DATABASE_TABLES = [
   'routes',
   'visitor_logs',
   'request_stats',
+  'proxy_stats_hourly',
   'auto_emby_daily_stats',
   'domain_speed_cache',
   'domain_best_cache',
@@ -66,6 +59,15 @@ const DATABASE_TABLES = [
   'invite_codes',
   'users',
 ];
+
+// 读取环境变量并按顺序取第一个非空值，用于新旧变量名兼容。
+function firstEnv(env, ...names) {
+  for (const name of names) {
+    const value = String(env?.[name] ?? '').trim();
+    if (value) return value;
+  }
+  return '';
+}
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: CORS_JSON });
@@ -79,18 +81,277 @@ function getCookie(req, name) {
   const s = req.headers.get('Cookie');
   if (!s) return null;
   const m = s.match(new RegExp('(^| )' + name + '=([^;]+)'));
-  return m ? decodeURIComponent(m[2]) : null;
+  if (!m) return null;
+  try {
+    return decodeURIComponent(m[2]);
+  } catch (_) {
+    return null;
+  }
 }
 
-// 管理员账号环境变量：在 CF 控制台添加 ADMIN_USERNAME / ADMIN_PASSWORD，
-// 登录页输入这组用户名密码即为管理员（无需注册、无需邀请码）
+function safeEqual(a, b) {
+  a = String(a || '');
+  b = String(b || '');
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+// ==================== 流量统计 / 每日日报 ====================
+const TELEGRAM_GROUP_URL = 'https://t.me/+7cbXthaBajszNjI1';
+const GITHUB_URL = 'https://github.com/Dirige/EMBY_CF';
+
+function formatBytes(bytes) {
+  const b = Math.max(0, Number(bytes) || 0);
+  if (!b) return '0 B';
+  const k = 1024, sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(b) / Math.log(k));
+  return parseFloat((b / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function getShanghaiParts(ts = Date.now()) {
+  const d = new Date(ts + 8 * 3600000);
+  const iso = d.toISOString();
+  return { dateKey: iso.slice(0, 10), hour: d.getUTCHours(), ts };
+}
+
+function shanghaiDateKey(ts = Date.now()) {
+  return new Date(ts + 8 * 3600000).toISOString().slice(0, 10);
+}
+
+function shiftDateKey(dateKey, deltaDays) {
+  const [y, m, d] = String(dateKey).split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d + deltaDays)).toISOString().slice(0, 10);
+}
+
+// 边转发边统计实际字节，避免客户端提前断开时被上游 Content-Length 放大
+function createCountedResponse(response, onDone) {
+  if (!response?.body) return response;
+  let bytes = 0;
+  const stream = new TransformStream({
+    transform(chunk, controller) {
+      bytes += chunk?.byteLength || 0;
+      controller.enqueue(chunk);
+    },
+    flush() {
+      try { onDone(bytes); } catch (_) {}
+    },
+  });
+  return new Response(response.body.pipeThrough(stream), {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
+function recordProxyStat(env, ctx, bytes, timestamp = Date.now()) {
+  if (!env?.DB || !ctx?.waitUntil) return;
+  const { dateKey, hour } = getShanghaiParts(timestamp);
+  const b = Math.max(0, Number(bytes) || 0);
+  const updatedAt = new Date(timestamp).toISOString();
+  const stmt = env.DB.prepare(
+    `INSERT INTO proxy_stats_hourly (bucket_date, bucket_hour, request_count, traffic_bytes, updated_at)
+     VALUES (?, ?, 1, ?, ?)
+     ON CONFLICT(bucket_date, bucket_hour) DO UPDATE SET
+       request_count = request_count + 1,
+       traffic_bytes = traffic_bytes + ?,
+       updated_at = excluded.updated_at`
+  ).bind(dateKey, hour, b, updatedAt, b);
+  ctx.waitUntil(stmt.run().catch(() => {}));
+}
+
+function getResponseBytes(response) {
+  if (!response) return 0;
+  const cl = response.headers.get('content-length');
+  if (cl) {
+    const n = parseInt(cl, 10);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return 0;
+}
+
+// ==================== Cloudflare GraphQL Analytics ====================
+function toGraphQLStr(v) { return JSON.stringify(String(v ?? '')); }
+
+async function cfFetchGraphql(apiToken, query) {
+  const res = await fetch('https://api.cloudflare.com/client/v4/graphql', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query }),
+  });
+  if (!res.ok) throw new Error(`cf_http_${res.status}`);
+  const data = await res.json();
+  if (Array.isArray(data?.errors) && data.errors.length) throw new Error(data.errors.map((e) => e?.message).filter(Boolean).join('; ') || 'cf_graphql_error');
+  return data;
+}
+
+async function cfGetZoneAnalytics(cfZoneId, cfApiToken, startIso, endIso, hosts) {
+  const hostFilter = Array.isArray(hosts) && hosts.length
+    ? `, clientRequestHTTPHost_in: [${hosts.map(toGraphQLStr).join(', ')}]`
+    : '';
+  const query = `query { viewer { zones(filter: { zoneTag: ${toGraphQLStr(cfZoneId)} }) { series: httpRequestsAdaptiveGroups(limit: 10000, filter: { datetime_geq: ${toGraphQLStr(startIso)}, datetime_leq: ${toGraphQLStr(endIso)}${hostFilter} }) { count dimensions { datetimeHour } sum { edgeResponseBytes visits } } } } }`;
+  const data = await cfFetchGraphql(cfApiToken, query);
+  return data?.data?.viewer?.zones?.[0] || null;
+}
+
+// 统计口径只取本 Worker 服务的域名：优先 STATS_HOSTS，其次请求 Host，
+// 再退回 CF_DOMAIN（旧名 BASE_DOMAIN）
+function getStatsHosts(env, fallbackHost) {
+  const configured = String(firstEnv(env, 'STATS_HOSTS')).split(',').map(s => s.trim()).filter(Boolean);
+  if (configured.length) return configured;
+  const host = String(fallbackHost || '').trim();
+  if (host) return [host];
+  const base = firstEnv(env, 'CF_DOMAIN', 'BASE_DOMAIN');
+  if (base) return [base];
+  return [];
+}
+
+async function sendTelegramMessage(env, text) {
+  const token = firstEnv(env, 'TG_BOT_TOKEN', 'TELEGRAM_BOT_TOKEN');
+  const chatId = firstEnv(env, 'TG_CHAT_ID', 'TELEGRAM_CHAT_ID');
+  if (!token || !chatId) return { ok: false, skipped: true, error: '未配置 TG_BOT_TOKEN / TG_CHAT_ID' };
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.ok) return { ok: false, error: data?.description || `telegram_http_${res.status}` };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e).slice(0, 200) };
+  }
+}
+
+// Bark：iOS 系统级推送。BARK_KEY 为 App 首页 api.day.app/ 后面的设备 Key。
+async function sendBarkMessage(env, title, body) {
+  const key = firstEnv(env, 'BARK_KEY');
+  if (!key) return { ok: false, skipped: true, error: '未配置 BARK_KEY' };
+  const rawLevel = firstEnv(env, 'BARK_LEVEL') || 'active';
+  const levelMap = { active: 'active', timesensitive: 'timeSensitive', critical: 'critical', passive: 'passive' };
+  const level = levelMap[rawLevel.toLowerCase()] || 'active';
+  try {
+    const res = await fetch('https://api.day.app/push', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        device_key: key,
+        title,
+        body,
+        group: 'Emby 日报',
+        level,
+      }),
+    });
+    const data = await res.json().catch(() => null);
+    const code = Number(data?.code);
+    if (!res.ok || (Number.isFinite(code) && code !== 200)) {
+      return { ok: false, error: data?.message || `bark_http_${res.status}` };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e).slice(0, 200) };
+  }
+}
+
+async function buildDailyReport(env, dateKey, hosts) {
+  const date = dateKey || shiftDateKey(shanghaiDateKey(), -1);
+  let requests = 0, bytes = 0, visits = null, source = 'D1 小时统计';
+
+  // 优先 CF Zone Analytics（与 CF 仪表盘口径一致），失败再回退 D1
+  const cfZoneId = firstEnv(env, 'CF_ZONE_ID');
+  const cfApiToken = firstEnv(env, 'CF_API_TOKEN');
+  let cfOk = false;
+  if (cfZoneId && cfApiToken) {
+    try {
+      const startOfDay = new Date(date + 'T00:00:00+08:00');
+      const zone = await cfGetZoneAnalytics(cfZoneId, cfApiToken, startOfDay.toISOString(), new Date(startOfDay.getTime() + 86400000 - 1).toISOString(), hosts);
+      if (zone?.series?.length) {
+        visits = 0;
+        for (const item of zone.series) {
+          bytes += Number(item?.sum?.edgeResponseBytes) || 0;
+          visits += Number(item?.sum?.visits) || 0;
+          requests += Number(item?.count) || 0;
+        }
+        source = 'CF Zone Analytics';
+        cfOk = true;
+      }
+    } catch (_) {}
+  }
+
+  if (!cfOk && env.DB) {
+    try {
+      const row = await env.DB.prepare('SELECT SUM(request_count) AS requests, SUM(traffic_bytes) AS bytes FROM proxy_stats_hourly WHERE bucket_date = ?').bind(date).first();
+      requests = Number(row?.requests) || 0;
+      bytes = Number(row?.bytes) || 0;
+      source = 'D1 小时统计';
+    } catch (_) {}
+  }
+
+  const lines = [
+    '📊 Emby 多用户版日报',
+    `日期：${date}（北京时间）`,
+    `请求数：${requests.toLocaleString('en-US')} 次`,
+    `流量：${formatBytes(bytes)}`,
+  ];
+  if (visits != null) lines.push(`访问量：${visits.toLocaleString('en-US')}`);
+  if (requests > 0) lines.push(`次均流量：${formatBytes(Math.round(bytes / requests))}`);
+
+  if (env.DB) {
+    try {
+      const uc = await env.DB.prepare('SELECT COUNT(*) AS c FROM users').first();
+      const nu = await env.DB.prepare("SELECT COUNT(*) AS c FROM users WHERE date(created_at, '+8 hours') = ?").bind(date).first();
+      lines.push(`用户总数：${Number(uc?.c) || 0}${Number(nu?.c) ? `（新增 ${Number(nu.c)}）` : ''}`);
+    } catch (_) {}
+    try {
+      const top = await env.DB.prepare('SELECT prefix, SUM(count) AS c FROM request_stats WHERE date = ? GROUP BY prefix ORDER BY c DESC LIMIT 5').bind(date).all();
+      const rows = top?.results || [];
+      if (rows.length) {
+        lines.push('', '🔥 热门路由');
+        rows.forEach((r, i) => lines.push(`${i + 1}. /${r.prefix} — ${Number(r.c) || 0} 次`));
+      }
+    } catch (_) {}
+  }
+
+  lines.push('', `数据源：${source}`);
+  lines.push('');
+  lines.push(`交流群：${TELEGRAM_GROUP_URL}`);
+  lines.push(`GitHub：${GITHUB_URL}`);
+  return lines.join('\n');
+}
+
+async function sendDailyReport(env, opts = {}) {
+  const date = opts.date || shiftDateKey(shanghaiDateKey(), -1);
+  const text = await buildDailyReport(env, date, opts.hosts);
+  const title = '📊 Emby 多用户版日报';
+  const [telegram, bark] = await Promise.all([
+    sendTelegramMessage(env, text),
+    sendBarkMessage(env, title, text),
+  ]);
+  const attempted = [telegram, bark].filter((r) => !r.skipped);
+  const ok = attempted.length ? attempted.some((r) => r.ok) : false;
+  const errors = [];
+  if (!telegram.skipped && !telegram.ok) errors.push(`Telegram: ${telegram.error}`);
+  if (!bark.skipped && !bark.ok) errors.push(`Bark: ${bark.error}`);
+  return {
+    ok,
+    error: ok ? undefined : (errors.length ? errors.join('; ') : '未配置推送渠道：请设置 TG_BOT_TOKEN / TG_CHAT_ID 或 BARK_KEY'),
+    date,
+    channels: { telegram: telegram.ok, bark: bark.ok },
+    text: opts.includeText ? text : undefined,
+  };
+}
+
+// 管理员账号环境变量：ADMIN_USERNAME + ADMIN_TOKEN（兼容旧名 ADMIN_PASSWORD / AdminPassword）
+// 登录页输入这组用户名和 ADMIN_TOKEN 即为管理员（无需注册、无需邀请码）
+// 未设置 ADMIN_USERNAME 时默认用户名为 admin，因此实际只需配置 ADMIN_TOKEN。
 function getAdminCredUser(env) {
   const u = String(env.ADMIN_USERNAME ?? env.AdminUsername ?? '').trim().toLowerCase();
-  return u || null;
+  return u || 'admin';
 }
 function getAdminCredPass(env) {
-  const p = String(env.ADMIN_PASSWORD ?? env.AdminPassword ?? '').trim();
-  return p || null;
+  return firstEnv(env, 'ADMIN_TOKEN', 'ADMIN_PASSWORD', 'AdminPassword') || null;
 }
 
 function getAdminUsers(env) {
@@ -101,13 +362,18 @@ function normalizeConfiguredDomain(value) {
   return String(value || '').trim().toLowerCase().replace(/\.+$/, '');
 }
 
-// BASE_DOMAIN is the complete public entry domain, for example
-// fd.dirige.de5.net. User subdomains are created below its parent domain.
+// CF_DOMAIN 是完整公共入口域名，例如 fd.example.com（旧名 BASE_DOMAIN）。
+// 用户子域名创建在它的上一级域名下：fd.example.com -> 用户名.example.com。
+// ADMIN_HOST 是管理员默认入口（多个域名用逗号分隔时取第一个），
+// 未设置时回退到 CF_DOMAIN；它和 CF_DOMAIN 一样可以直接使用全局路由。
 function getDomainConfig(env) {
-  const publicEntryDomain = normalizeConfiguredDomain(env.BASE_DOMAIN);
+  const publicEntryDomain = normalizeConfiguredDomain(firstEnv(env, 'CF_DOMAIN', 'BASE_DOMAIN'));
   const labels = publicEntryDomain.split('.').filter(Boolean);
   const userBaseDomain = labels.length >= 3 ? labels.slice(1).join('.') : publicEntryDomain;
-  return { publicEntryDomain, userBaseDomain };
+  const adminHost = normalizeConfiguredDomain(
+    String(firstEnv(env, 'ADMIN_HOST', 'ADMIN_DOMAIN')).split(',')[0]
+  ) || publicEntryDomain;
+  return { publicEntryDomain, userBaseDomain, adminHost };
 }
 
 function getBaseDomain(env) {
@@ -128,7 +394,15 @@ function isIpv4(value) {
 }
 
 function isIpv6(value) {
-  return String(value || '').includes(':') && /^[0-9a-f:]+$/i.test(String(value || ''));
+  let s = String(value || '').trim();
+  if (s.startsWith('[') && s.endsWith(']')) s = s.slice(1, -1);
+  if (!s.includes(':')) return false;
+  try {
+    const u = new URL('http://[' + s + ']');
+    return u.hostname.startsWith('[') && u.hostname.endsWith(']');
+  } catch (_) {
+    return false;
+  }
 }
 
 function normalizeDnsTarget(value) {
@@ -139,9 +413,11 @@ function normalizeDnsTarget(value) {
   } catch (_) {
     return null;
   }
-  target = target.replace(/\.+$/, '').toLowerCase();
-  if (!target || /[/?#:@]/.test(target) || target.length > 253) return null;
-  if (isIpv4(target) || isIpv6(target)) return target;
+  target = target.replace(/^\[|\]$/g, '').replace(/\.+$/, '').toLowerCase();
+  if (!target || target.length > 253) return null;
+  if (isIpv6(target)) return target;
+  if (/[/?#@:]/.test(target)) return null;
+  if (isIpv4(target)) return target;
   const labels = target.split('.');
   if (labels.length < 2 || labels.some((label) => !isDnsLabel(label))) return null;
   return target;
@@ -155,8 +431,8 @@ function dnsRecordType(target) {
 
 function getDnsConfig(env) {
   return {
-    zoneId: String(env.CF_ZONE_ID || '').trim(),
-    token: String(env.CF_DNS_API_TOKEN || env.CF_API_TOKEN || '').trim(),
+    zoneId: firstEnv(env, 'CF_ZONE_ID'),
+    token: firstEnv(env, 'CF_DNS_API_TOKEN', 'CF_API_TOKEN'),
   };
 }
 
@@ -212,18 +488,26 @@ async function replaceUserDnsRecord(env, subdomain, target) {
   return { host: normalizedTarget, type, name: fullName, recordId: data.result?.id || '' };
 }
 
-// 校验 admin_token cookie：匹配 ADMIN_PASSWORD
-function isAdminCookie(request, env) {
+// 校验 admin_token cookie：HMAC 签名 token，不再使用明文密码
+async function isAdminCookie(request, env) {
   const provided = getCookie(request, 'admin_token');
-  if (!provided) return false;
-  const adminPass = getAdminCredPass(env);
-  if (adminPass && provided === adminPass) return true;
-  return false;
+  if (!provided || !provided.includes('.')) return false;
+  const idx = provided.lastIndexOf('.');
+  const payload = provided.slice(0, idx);
+  const sig = provided.slice(idx + 1);
+  const parts = payload.split(':');
+  if (parts[0] !== 'admin' || !parts[1] || Date.now() > Number(parts[1])) return false;
+  if (!getSessionSecret(env)) return false;
+  try {
+    return safeEqual(await signHmac(payload, env), sig);
+  } catch (_) {
+    return false;
+  }
 }
 
 // 判断是否属于管理员（admin_token cookie 或用户表中 role === 'admin'）
 async function hasAdminAccess(request, env) {
-  if (isAdminCookie(request, env)) return true;
+  if (await isAdminCookie(request, env)) return true;
   // 用户账号角色为 admin
   if (env.DB) {
     const u = await getUser(request, env);
@@ -232,25 +516,24 @@ async function hasAdminAccess(request, env) {
   return false;
 }
 
-// 同步版（仅检查 admin_token cookie，用于需要同步返回的场景）
-function isAdmin(request, env) {
-  return isAdminCookie(request, env);
-}
-
-function adminLoginResponse(request, env, username, password) {
+async function adminLoginResponse(request, env, username, password) {
   const adminUser = getAdminCredUser(env);
   const adminPass = getAdminCredPass(env);
   if (!adminUser || !adminPass) {
     return json({
       ok: false,
-      error: 'Worker 未配置 ADMIN_USERNAME / ADMIN_PASSWORD。请在 Cloudflare 控制台 → Worker → 设置 → 变量和机密 中添加。',
+      error: 'Worker 未配置 ADMIN_TOKEN。请在 Cloudflare 控制台 → Worker → 设置 → 变量和机密 中添加。',
     }, 503);
   }
   if (username !== adminUser || password !== adminPass) {
     return json({ ok: false, error: '用户名或密码错误' }, 401);
   }
+  if (!getSessionSecret(env)) {
+    return json({ ok: false, error: '未配置 SESSION_SECRET（或 ADMIN_TOKEN），无法签发管理员会话' }, 503);
+  }
+  const token = await signAdminToken(env);
   const secure = new URL(request.url).protocol === 'https:' ? '; Secure' : '';
-  const cookie = `admin_token=${encodeURIComponent(adminPass)}; Path=/; Max-Age=2592000; SameSite=Lax${secure}`;
+  const cookie = `admin_token=${token}; Path=/; Max-Age=${SESSION_TTL}; SameSite=Lax; HttpOnly${secure}`;
   return new Response(JSON.stringify({ ok: true }), {
     status: 200,
     headers: {
@@ -266,7 +549,7 @@ const SESSION_TTL = 30 * 24 * 3600;
 const RESERVED_SUBDOMAINS = ['admin', 'api', 'www', 'user', 'login', 'register', 'static', 'cdn', 'mail', 'stats', 'health', 'cdn-cgi', 'assets'];
 
 function getSessionSecret(env) {
-  return String(env.SESSION_SECRET || env.ADMIN_TOKEN || 'changeme-session-secret');
+  return firstEnv(env, 'SESSION_SECRET', 'ADMIN_TOKEN', 'ADMIN_PASSWORD') || null;
 }
 function bufToHex(buf) {
   return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
@@ -292,19 +575,29 @@ function genInviteCode() {
   return s;
 }
 async function signHmac(payload, env) {
+  const secret = getSessionSecret(env);
+  if (!secret) throw new Error('未配置 SESSION_SECRET');
   const algorithm = { name: 'HMAC', hash: 'SHA-256' };
-  const key = await crypto.subtle.importKey('raw', TE.encode(getSessionSecret(env)), algorithm, false, ['sign']);
+  const key = await crypto.subtle.importKey('raw', TE.encode(secret), algorithm, false, ['sign']);
   return bufToHex(await crypto.subtle.sign(algorithm, key, TE.encode(payload)));
 }
 async function signSession(userId, env) {
+  if (!getSessionSecret(env)) throw new Error('未配置 SESSION_SECRET');
   const exp = Date.now() + SESSION_TTL * 1000;
   const payload = userId + ':' + exp;
   return payload + '.' + (await signHmac(payload, env));
 }
+async function signAdminToken(env) {
+  if (!getSessionSecret(env)) throw new Error('未配置 SESSION_SECRET');
+  const exp = Date.now() + SESSION_TTL * 1000;
+  const payload = 'admin:' + exp;
+  return payload + '.' + (await signHmac(payload, env));
+}
 function setSessionCookie(value) {
-  return `user_token=${value}; Path=/; Max-Age=${SESSION_TTL}; SameSite=Lax; Secure`;
+  return `user_token=${value}; Path=/; Max-Age=${SESSION_TTL}; SameSite=Lax; HttpOnly; Secure`;
 }
 async function getUser(request, env) {
+  if (!getSessionSecret(env)) return null;
   const token = getCookie(request, 'user_token');
   if (!token || !token.includes('.')) return null;
   const idx = token.lastIndexOf('.');
@@ -312,7 +605,11 @@ async function getUser(request, env) {
   const sig = token.slice(idx + 1);
   const parts = payload.split(':');
   if (!parts[0] || !parts[1] || Date.now() > Number(parts[1])) return null;
-  if ((await signHmac(payload, env)) !== sig) return null;
+  try {
+    if (!safeEqual(await signHmac(payload, env), sig)) return null;
+  } catch (_) {
+    return null;
+  }
   if (!env.DB) return null;
   const u = await env.DB.prepare('SELECT id, username, role, status FROM users WHERE id = ?').bind(Number(parts[0])).first();
   return (u && u.status === 'active') ? u : null;
@@ -423,7 +720,7 @@ function buildUserHtml(u, env) {
       <div class="target-input-row"><input type="url" class="user-target-url-input" placeholder="主线路地址 (如: https://emby.example.com:8096)"><button class="btn-remove" onclick="removeUserTargetInput(this)" title="移除">✕</button></div>
     </div>
     <button class="btn btn-outline btn-sm" style="margin-top:8px" onclick="addUserTargetInput()">添加备用线路</button>
-    <p class="form-hint">多个线路按顺序 failover，测速后按延迟排序优选</p>
+    <p class="form-hint">多个线路按顺序 failover，测速结果仅用于本机参考</p>
   </div>
   <div class="form-group">
     <label class="checkbox-label"><input type="checkbox" id="userRouteCache" checked> 启用图片/静态资源缓存</label>
@@ -436,7 +733,7 @@ function buildUserHtml(u, env) {
 let myRoutes=[];
 function closeModal(id){document.getElementById(id).classList.remove('show');}
 function openModal(id){document.getElementById(id).classList.add('show');}
-function doLogout(){document.cookie='user_token=;path=/;max-age=0';location.reload();}
+function doLogout(){fetch('/api/logout',{method:'POST'}).finally(function(){location.reload();});}
 function showToast(msg){var t=document.getElementById('toast');if(!t){t=document.createElement('div');t.id='toast';document.body.appendChild(t);}t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},2500);}
 function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
 function enc(v){return encodeURIComponent(String(v==null?'':v));}
@@ -576,15 +873,36 @@ async function delUserRoute(prefixValue){
   showToast('已删除');
   loadUserRoutes();
 }
+function pingMs(url,timeout){
+  return new Promise(function(resolve){
+    var t0=performance.now();
+    var timer=setTimeout(function(){resolve(-1);},timeout||6000);
+    var done=function(ms){clearTimeout(timer);resolve(ms>=0&&ms<(timeout||6000)?ms:-1);};
+    fetch(url,{mode:'no-cors',cache:'no-store',credentials:'omit'}).then(function(){
+      done(Math.round(performance.now()-t0));
+    }).catch(function(){
+      var img=new Image();
+      var t1=performance.now();
+      var t2=setTimeout(function(){done(-1);},4000);
+      var end=function(){clearTimeout(t2);done(Math.round(performance.now()-t1));};
+      img.onload=end;img.onerror=end;
+      img.src=url+(url.indexOf('?')>=0?'&':'?')+'_='+Date.now();
+    });
+  });
+}
 async function speedtestUserRoute(prefixValue){
-  const prefix=decodeURIComponent(prefixValue||'');
-  showToast('测速中...');
-  const r=await fetch('/api/user/speedtest/routes?prefix='+encodeURIComponent(prefix),{method:'POST'});
-  const d=await r.json();
-  if(!r.ok||!d.ok){showToast(d.error||'测速失败');return;}
-  const ok=(d.results||[]).filter(function(x){return x.latency>=0;}).length;
-  showToast('测速完成，'+ok+'条线路可用');
-  loadUserRoutes();
+  var prefix=decodeURIComponent(prefixValue||'');
+  var r=myRoutes.find(function(x){return x.prefix===prefix;});
+  if(!r){showToast('路由不存在');return;}
+  var targets=String(r.target||'').split(',').map(function(s){return s.trim();}).filter(Boolean);
+  if(!targets.length){showToast('没有可测速的线路');return;}
+  showToast('本机测速中...');
+  var latencies={};
+  var results=await Promise.all(targets.map(async function(t){var ms=await pingMs(t);latencies[t]=ms;return {url:t,latency:ms};}));
+  r.target_latencies=JSON.stringify(latencies);
+  renderUserRoutes(myRoutes);
+  var ok=results.filter(function(x){return x.latency>=0;}).length;
+  showToast('测速完成，'+ok+'/'+results.length+' 条线路可用');
 }
 loadDomains();
 loadUserRoutes();
@@ -631,6 +949,10 @@ function databaseSchemaStatements(env) {
       timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, ip TEXT, country TEXT, ua TEXT)`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS request_stats (
       prefix TEXT, date TEXT, count INTEGER DEFAULT 0, PRIMARY KEY(prefix, date))`),
+    env.DB.prepare(`CREATE TABLE IF NOT EXISTS proxy_stats_hourly (
+      bucket_date TEXT NOT NULL, bucket_hour INTEGER NOT NULL,
+      request_count INTEGER NOT NULL DEFAULT 0, traffic_bytes INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT, PRIMARY KEY(bucket_date, bucket_hour))`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS auto_emby_daily_stats (
       date TEXT PRIMARY KEY, playing_count INTEGER DEFAULT 0, playback_info_count INTEGER DEFAULT 0)`),
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS domain_speed_cache (
@@ -776,105 +1098,6 @@ async function getEdgeInfo(request) {
   };
 }
 
-async function speedtestUrl(urlStr, timeoutMs = 5000) {
-  const start = Date.now();
-  try {
-    const u = new URL(urlStr.startsWith('http') ? urlStr : 'https://' + urlStr);
-    const ctrl = new AbortController();
-    const tid = setTimeout(() => ctrl.abort(), timeoutMs);
-    const res = await fetch(u.origin + '/', { method: 'HEAD', signal: ctrl.signal, redirect: 'manual' });
-    clearTimeout(tid);
-    if (res.status === 502 || res.status === 503 || res.status === 504) return -1;
-    return Date.now() - start;
-  } catch {
-    return -1;
-  }
-}
-
-async function speedtestOptimizedFromEdge() {
-  const results = [];
-  for (const item of OPTIMIZED_DOMAINS) {
-    const host = optimizedHost(item);
-    const ms = await speedtestUrl(`https://${host}/cdn-cgi/trace`, 4000);
-    results.push({
-      subdomain: item.subdomain, domain: item.domain, name: item.name, host,
-      latency: ms, status: latencyStatus(ms),
-    });
-  }
-  results.sort((a, b) => {
-    if (a.latency < 0 && b.latency < 0) return 0;
-    if (a.latency < 0) return 1;
-    if (b.latency < 0) return -1;
-    return a.latency - b.latency;
-  });
-  const best = results.find((r) => r.latency >= 0);
-  return { results, best: best ? best.host : null };
-}
-
-async function speedtestRouteTargets(env, prefix) {
-  const route = await env.DB.prepare('SELECT * FROM routes WHERE prefix = ? AND user_id IS NULL').bind(prefix).first();
-  if (!route) return [];
-  const targets = route.target.split(',').map(s => s.trim()).filter(Boolean);
-  const latencies = {};
-  const out = [];
-  for (const t of targets) {
-    const ms = await speedtestUrl(t);
-    latencies[t] = ms;
-    out.push({ url: t, latency: ms, status: latencyStatus(ms) });
-  }
-  await env.DB.prepare('UPDATE routes SET target_latencies = ? WHERE prefix = ? AND user_id IS NULL')
-    .bind(JSON.stringify(latencies), prefix).run();
-  out.sort((a, b) => {
-    if (a.latency < 0 && b.latency < 0) return 0;
-    if (a.latency < 0) return 1;
-    if (b.latency < 0) return -1;
-    return a.latency - b.latency;
-  });
-  return out;
-}
-
-async function speedtestUserRouteTargets(env, prefix, userId) {
-  const route = await env.DB.prepare('SELECT * FROM routes WHERE prefix = ? AND user_id = ?')
-    .bind(prefix, userId).first();
-  if (!route) return null;
-  const targets = route.target.split(',').map(s => s.trim()).filter(Boolean);
-  const latencies = {};
-  const out = [];
-  for (const t of targets) {
-    const ms = await speedtestUrl(t);
-    latencies[t] = ms;
-    out.push({ url: t, latency: ms, status: latencyStatus(ms) });
-  }
-  await env.DB.prepare('UPDATE routes SET target_latencies = ? WHERE prefix = ? AND user_id = ?')
-    .bind(JSON.stringify(latencies), prefix, userId).run();
-  out.sort((a, b) => {
-    if (a.latency < 0 && b.latency < 0) return 0;
-    if (a.latency < 0) return 1;
-    if (b.latency < 0) return -1;
-    return a.latency - b.latency;
-  });
-  return out;
-}
-
-async function speedtestAllRoutes(env) {
-  const { results: routes } = await env.DB.prepare('SELECT prefix, target FROM routes WHERE user_id IS NULL ORDER BY sort_order, prefix').all();
-  const allResults = {};
-  for (const route of routes || []) {
-    const targets = route.target.split(',').map(s => s.trim()).filter(Boolean);
-    const latencies = {};
-    for (const t of targets) {
-      const ms = await speedtestUrl(t);
-      latencies[t] = ms;
-    }
-    await env.DB.prepare('UPDATE routes SET target_latencies = ? WHERE prefix = ? AND user_id IS NULL')
-      .bind(JSON.stringify(latencies), route.prefix).run();
-    allResults[route.prefix] = Object.entries(latencies).map(([url, latency]) => ({
-      url, latency, status: latencyStatus(latency),
-    }));
-  }
-  return allResults;
-}
-
 async function saveDomainSpeedCache(env, cacheKey, rows) {
   const now = Date.now();
   const expires = now + CONFIG.domainCacheTtlMs;
@@ -920,50 +1143,62 @@ async function loadDomainSpeedCache(env, cacheKey) {
     'SELECT subdomain, domain, display_name, latency_ms, status, tested_at FROM domain_speed_cache WHERE cache_key = ? ORDER BY latency_ms ASC'
   ).bind(cacheKey).all();
   if (!results?.length) return null;
-  const validHosts = new Set(OPTIMIZED_DOMAINS.map(optimizedHost));
-  const currentResults = results.filter((r) => validHosts.has(optimizedHost(r)));
+  const known = new Map(OPTIMIZED_DOMAINS.map((d) => [optimizedHost(d), d]));
+  const currentResults = results.filter((r) => known.has(optimizedHost(r)));
   if (!currentResults.length) return null;
   const bestRow = currentResults.find((r) => optimizedHost(r) === best.best_host) ||
     currentResults.find((r) => r.latency_ms >= 0);
+  const knownName = (host) => known.get(host)?.name || '';
   return {
     cached: true,
     cacheKey,
     best: bestRow ? optimizedHost(bestRow) : null,
-    bestName: bestRow ? bestRow.display_name : best.best_name,
+    bestName: bestRow ? knownName(optimizedHost(bestRow)) : '',
     results: currentResults.map((r) => ({
-      subdomain: r.subdomain, domain: r.domain, name: r.display_name, host: optimizedHost(r),
+      subdomain: r.subdomain, domain: r.domain, name: knownName(optimizedHost(r)), host: optimizedHost(r),
       latency: r.latency_ms, status: r.status,
     })),
     expiresAt: best.expires_at,
   };
 }
 
-async function recordStats(env, type) {
-  if (!env.DB || !CONFIG.enableStats) return;
-  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
-  const q = type === 'playing'
-    ? `INSERT INTO auto_emby_daily_stats (date, playing_count, playback_info_count) VALUES (?, 1, 0)
-       ON CONFLICT(date) DO UPDATE SET playing_count = playing_count + 1`
-    : `INSERT INTO auto_emby_daily_stats (date, playing_count, playback_info_count) VALUES (?, 0, 1)
-       ON CONFLICT(date) DO UPDATE SET playback_info_count = playback_info_count + 1`;
-  await env.DB.prepare(q).bind(today).run();
-}
-
 async function handleStatsRequest(env) {
   if (!env.DB) return json({ error: "D1 数据库未绑定", data: null });
+  const since = `date('now', '+8 hours', '-30 days')`;
   const statsResult = await env.DB.prepare(
-    `SELECT date, playing_count, playback_info_count FROM auto_emby_daily_stats
-     WHERE date >= date('now', '-30 days') ORDER BY date DESC`
+    `SELECT bucket_date AS date,
+            SUM(request_count) AS requests,
+            SUM(traffic_bytes) AS bytes
+     FROM proxy_stats_hourly
+     WHERE bucket_date >= ${since}
+     GROUP BY bucket_date
+     ORDER BY bucket_date DESC`
   ).all();
   const totalResult = await env.DB.prepare(
-    `SELECT SUM(playing_count) as total_playing, SUM(playback_info_count) as total_playback_info
-     FROM auto_emby_daily_stats WHERE date >= date('now', '-30 days')`
+    `SELECT COALESCE(SUM(request_count), 0) AS requests,
+            COALESCE(SUM(traffic_bytes), 0) AS bytes
+     FROM proxy_stats_hourly
+     WHERE bucket_date >= ${since}`
   ).first();
+  const dailyStats = (statsResult?.results || []).map((row) => {
+    const bytes = Number(row.bytes) || 0;
+    return {
+      date: row.date,
+      requests: Number(row.requests) || 0,
+      bytes,
+      traffic: formatBytes(bytes),
+    };
+  });
+  const totalBytes = Number(totalResult?.bytes) || 0;
   return json({
     error: null,
     data: {
-      total: { playing: totalResult?.total_playing || 0, playbackInfo: totalResult?.total_playback_info || 0 },
-      dailyStats: statsResult?.results || [],
+      total: {
+        requests: Number(totalResult?.requests) || 0,
+        bytes: totalBytes,
+        traffic: formatBytes(totalBytes),
+      },
+      dailyStats,
       lastUpdated: new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }),
     },
   });
@@ -1073,14 +1308,6 @@ async function handleUserRouteApi(request, env, url, user) {
     }
   }
 
-  if (url.pathname === '/api/user/speedtest/routes' && request.method === 'POST') {
-    const prefix = normalizePrefix(url.searchParams.get('prefix'));
-    if (!prefix) return json({ error: '缺少 prefix 参数' }, 400);
-    const results = await speedtestUserRouteTargets(env, prefix, user.id);
-    if (!results) return json({ error: '路由不存在或不属于当前用户' }, 404);
-    return json({ ok: true, results });
-  }
-
   return json({ error: 'Not found' }, 404);
 }
 
@@ -1093,11 +1320,16 @@ async function handleAdminApi(request, env, url) {
       return json(results || []);
     }
     if (request.method === 'POST') {
-      const data = await request.json();
+      const data = await request.json().catch(() => ({}));
       const err = validatePrefix(data.prefix);
       if (err) return json({ error: err }, 400);
+      const targetResult = normalizeRouteTarget(data.target);
+      if (targetResult.error) return json({ error: targetResult.error }, 400);
       const prefix = normalizePrefix(data.prefix);
       const oldPrefix = normalizePrefix(data.oldPrefix);
+      const remark = String(data.remark || '').trim().slice(0, 200);
+      const cacheImg = data.cache_img === 'off' ? 'off' : 'on';
+      const compatMode = data.compat_mode === 'on' ? 'on' : 'off';
       let currentSortOrder = 0;
       if (oldPrefix && oldPrefix !== prefix) {
         const oldRow = await env.DB.prepare('SELECT sort_order FROM routes WHERE prefix = ? AND user_id IS NULL').bind(oldPrefix).first();
@@ -1114,7 +1346,7 @@ async function handleAdminApi(request, env, url) {
       await env.DB.prepare(
         'INSERT OR REPLACE INTO routes (prefix, target, remark, cache_img, compat_mode, sort_order, target_latencies, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
       ).bind(
-        prefix, data.target, data.remark || '', data.cache_img || 'on', data.compat_mode || 'off', currentSortOrder, '', null
+        prefix, targetResult.value, remark, cacheImg, compatMode, currentSortOrder, '', null
       ).run();
       return json({ success: true });
     }
@@ -1124,21 +1356,6 @@ async function handleAdminApi(request, env, url) {
       await env.DB.prepare('DELETE FROM routes WHERE prefix = ? AND user_id IS NULL').bind(normalizePrefix(prefix)).run();
       return json({ success: true });
     }
-  }
-
-  if (url.pathname === '/admin/api/speedtest/routes' && request.method === 'POST') {
-    const prefix = url.searchParams.get('prefix');
-    if (prefix) {
-      const results = await speedtestRouteTargets(env, normalizePrefix(prefix));
-      return json({ results });
-    }
-    const allResults = await speedtestAllRoutes(env);
-    return json({ results: allResults });
-  }
-
-  if (url.pathname === '/admin/api/speedtest/domains' && request.method === 'POST') {
-    const data = await speedtestOptimizedFromEdge();
-    return json(data);
   }
 
   if (url.pathname === '/admin/api/invites' && request.method === 'GET') {
@@ -1209,6 +1426,15 @@ async function handleAdminApi(request, env, url) {
     return json({ ok: true, generated: count, codes });
   }
 
+  if (url.pathname === '/admin/api/report/send' && request.method === 'POST') {
+    try {
+      const result = await sendDailyReport(env, { includeText: true, hosts: getStatsHosts(env, url.hostname) });
+      return json(result);
+    } catch (e) {
+      return json({ ok: false, error: String(e?.message || e).slice(0, 200) }, 500);
+    }
+  }
+
   if (url.pathname === '/admin/api/database/reset' && request.method === 'POST') {
     const body = await request.json().catch(() => ({}));
     if (body.confirmation !== 'RESET DATABASE') {
@@ -1230,14 +1456,18 @@ async function handleAdminApi(request, env, url) {
 }
 
 async function resolveProxyTarget(request, env, url, userId = null) {
-  const decodedPath = decodeURIComponent(url.pathname);
+  let decodedPath;
+  try {
+    decodedPath = decodeURIComponent(url.pathname);
+  } catch (_) {
+    return { error: new Response('Bad Request: 路径编码无效', { status: 400 }) };
+  }
   let upstreamUrls = [];
   let enableCache = true;
   let compatMode = false;
   let matchedPrefix = null;
   let matchedRouteId = null;
   let matchedUserId = null;
-  let needsSpeedTest = false;
 
   const pathParts = decodedPath.split('/').filter(Boolean);
   const prefix = normalizeAlias(pathParts[0]);
@@ -1280,13 +1510,10 @@ async function resolveProxyTarget(request, env, url, userId = null) {
         }
       } catch (_) {}
     }
-    if (targetUrls.length > 1 && !route.target_latencies) {
-      needsSpeedTest = true;
-    }
     upstreamUrls = targetUrls.map(t => t.replace(/\/+$/, '') + remainingPath + url.search);
   }
 
-  return { upstreamUrls, enableCache, compatMode, matchedPrefix, matchedRouteId, matchedUserId, needsSpeedTest };
+  return { upstreamUrls, enableCache, compatMode, matchedPrefix, matchedRouteId, matchedUserId };
 }
 
 function normalizeAlias(a) {
@@ -1328,7 +1555,6 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
     matchedPrefix = null,
     matchedRouteId = null,
     matchedUserId = null,
-    needsSpeedTest = false,
     preferredHost = null,
     proxyPathPrefix = null,
   } = opts;
@@ -1339,14 +1565,6 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
 
   if (!upstreamUrls.length) return new Response('404: Target empty', { status: 404 });
 
-  if (needsSpeedTest && matchedPrefix && env.DB && ctx?.waitUntil) {
-    if (matchedUserId !== null && matchedUserId !== undefined) {
-      ctx.waitUntil(speedtestUserRouteTargets(env, matchedPrefix, matchedUserId));
-    } else {
-      ctx.waitUntil(speedtestRouteTargets(env, matchedPrefix));
-    }
-  }
-
   let firstUpstreamUrl;
   try {
     firstUpstreamUrl = new URL(upstreamUrls[0]);
@@ -1355,14 +1573,6 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
   }
 
   const isPlaybackInfo = /\/PlaybackInfo/i.test(firstUpstreamUrl.pathname);
-  const isPlaying = firstUpstreamUrl.pathname.endsWith('/Sessions/Playing');
-
-  if (isPlaying && CONFIG.enableStats) {
-    ctx.waitUntil(recordStats(env, 'playing'));
-  }
-  if (isPlaybackInfo) {
-    ctx.waitUntil(recordStats(env, 'playback_info'));
-  }
 
   if (matchedPrefix && env.DB && ctx?.waitUntil && isPlaybackInfo) {
     const todayStr = new Date(Date.now() + 8 * 3600000).toISOString().split('T')[0];
@@ -1415,20 +1625,7 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
       continue;
     }
 
-    if (PIKPAK_DOMAINS.some((d) => upstreamUrl.hostname.endsWith(d))) {
-      return Response.redirect(new URL(upstreamUrl.pathname + upstreamUrl.search, CONFIG.pikpakProxyUrl).toString(), 301);
-    }
     if (blocker.check(upstreamUrl.toString())) return Response.redirect('https://baidu.com', 301);
-
-    const colo = request.cf?.colo;
-    if (colo && JP_COLOS.includes(colo)) {
-      for (const suffix in DOMAIN_PROXY_RULES) {
-        if (upstreamUrl.host.endsWith(suffix)) {
-          upstreamUrl.hostname = DOMAIN_PROXY_RULES[suffix];
-          break;
-        }
-      }
-    }
 
     const headers = new Headers(request.headers);
     headers.set('Host', upstreamUrl.host);
@@ -1534,7 +1731,9 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
         }
         if (modified) {
           responseHeaders.delete('Content-Length');
-          return new Response(JSON.stringify(data), { status: finalResponse.status, headers: responseHeaders });
+          const bodyStr = JSON.stringify(data);
+          recordProxyStat(env, ctx, new TextEncoder().encode(bodyStr).byteLength);
+          return new Response(bodyStr, { status: finalResponse.status, headers: responseHeaders });
         }
       } catch (_) {}
     }
@@ -1556,6 +1755,7 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
             }
           });
           responseHeaders.delete('Content-Length');
+          recordProxyStat(env, ctx, new TextEncoder().encode(modifiedText).byteLength);
           return new Response(modifiedText, { status: finalResponse.status, headers: responseHeaders });
         }
       } catch (_) {}
@@ -1576,6 +1776,16 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
   responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   responseHeaders.set('Access-Control-Allow-Headers', '*');
   responseHeaders.set('X-Content-Type-Options', 'nosniff');
+
+  if (env.DB && finalResponse.body && request.method !== 'HEAD') {
+    const counted = createCountedResponse(finalResponse, (bytes) => recordProxyStat(env, ctx, bytes));
+    return new Response(counted.body, {
+      status: counted.status,
+      statusText: counted.statusText,
+      headers: responseHeaders,
+    });
+  }
+  recordProxyStat(env, ctx, getResponseBytes(finalResponse));
 
   return new Response(finalResponse.body, {
     status: finalResponse.status,
@@ -1796,8 +2006,8 @@ function buildFrontendHtml() {
     <div id="stats-loading" class="muted">LOADING...</div>
     <div id="stats-body" style="display:none">
       <div class="stat-row">
-        <div class="stat-card"><div>播放次数</div><div class="stat-val" id="st-play">0</div></div>
-        <div class="stat-card"><div>获取链接</div><div class="stat-val" id="st-pb">0</div></div>
+        <div class="stat-card"><div>总请求数</div><div class="stat-val" id="st-req">0</div></div>
+        <div class="stat-card"><div>总流量</div><div class="stat-val" id="st-traffic">0 B</div></div>
       </div>
       <div id="daily-table"></div>
     </div>
@@ -1807,6 +2017,12 @@ function buildFrontendHtml() {
 const OPT_DOMAINS = ${domainListJson};
 const TAG = { fast:'极快', good:'良好', slow:'较慢', timeout:'超时' };
 const CLS = { fast:'tag-fast', good:'tag-good', slow:'tag-slow', timeout:'tag-timeout' };
+
+function escHtml(v){
+  return String(v==null?'':v).replace(/[&<>"']/g,function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
 
 async function loadEdge() {
   try {
@@ -1821,7 +2037,7 @@ async function loadEdge() {
       ['国家/地区', d.entryCountry + (d.entryCity ? ' / '+d.entryCity : '')],
       ['边缘出口 IP', d.edgeIp],
       ['落地 COLO', d.egressColo],
-    ].map(([k,v]) => '<div class="edge-item"><strong>'+k+'</strong>'+ (v||'—') +'</div>').join('');
+    ].map(([k,v]) => '<div class="edge-item"><strong>'+escHtml(k)+'</strong>'+escHtml(v||'—')+'</div>').join('');
   } catch(e) { document.getElementById('edge-loading').textContent = '加载失败'; }
 }
 
@@ -1831,8 +2047,9 @@ function renderDomainTable(results, best) {
   let html = '<table><thead><tr><th>#</th><th>名称</th><th>域名</th><th>延迟</th><th>状态</th></tr></thead><tbody>';
   results.forEach((r, i) => {
     const host = r.host || (r.subdomain ? r.subdomain+'.'+r.domain : r.domain);
+    const lat = Number(r.latency);
     const isBest = best && best === host;
-    html += '<tr class="'+(isBest?'best':'')+'"><td>'+(i+1)+'</td><td>'+ (r.name||r.display_name||'') +'</td><td><code>'+host+'</code></td><td>'+(r.latency>=0?r.latency+' ms':'—')+'</td><td><span class="tag '+CLS[r.status||'timeout']+'">'+(TAG[r.status]||'—')+'</span></td></tr>';
+    html += '<tr class="'+(isBest?'best':'')+'"><td>'+(i+1)+'</td><td>'+escHtml(r.name||r.display_name||'')+'</td><td><code>'+escHtml(host)+'</code></td><td>'+(lat>=0?lat+' ms':'—')+'</td><td><span class="tag '+CLS[r.status||'timeout']+'">'+(TAG[r.status]||'—')+'</span></td></tr>';
   });
   wrap.innerHTML = html + '</tbody></table>';
 }
@@ -1866,14 +2083,6 @@ async function probeDomain(item) {
       return { subdomain: item.subdomain, domain: item.domain, name: item.name, host, latency: ms, status, source: 'client' };
     }
   }
-  try {
-    const r = await fetch('/api/ping-host?host=' + encodeURIComponent(host));
-    const d = await r.json();
-    if (d.ms >= 0) {
-      const status = d.ms < 100 ? 'fast' : d.ms < 300 ? 'good' : 'slow';
-      return { subdomain: item.subdomain, domain: item.domain, name: item.name, host, latency: d.ms, status, source: 'edge' };
-    }
-  } catch (_) {}
   return { subdomain: item.subdomain, domain: item.domain, name: item.name, host, latency: -1, status: 'timeout', source: 'none' };
 }
 
@@ -1904,33 +2113,21 @@ async function runDomainSpeed(force) {
       }
     } catch(e) {}
   }
-  st.textContent = '加载边缘测速...';
+  st.textContent = '正在用本机网络测速...';
   wrap.innerHTML = '<p class="muted">测速中...</p>';
-  let results = [];
-  try {
-    const er = await fetch('/api/domains/speed?edge=1');
-    const ed = await er.json();
-    if (ed.results?.length) {
-      results = ed.results;
-      finalizeResults(results);
-      renderDomainTable(results, ed.best);
-      st.textContent = '边缘测速完成，正在用您的网络复测...';
-    }
-  } catch (_) {}
   const clientResults = await Promise.all(OPT_DOMAINS.map(probeDomain));
   finalizeResults(clientResults);
   const clientOk = clientResults.filter(r => r.latency >= 0).length;
+  const best = clientResults.find(r => r.latency >= 0);
+  renderDomainTable(clientResults, best);
   if (clientOk > 0) {
-    results = clientResults;
     st.textContent = '浏览器测速完成（' + clientOk + '/' + OPT_DOMAINS.length + ' 可用）';
     try {
-      await fetch('/api/domains/speed', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ results }) });
+      await fetch('/api/domains/speed', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ results: clientResults }) });
     } catch(e) {}
-  } else if (!results.length) {
+  } else {
     st.textContent = '测速失败，请检查网络或稍后重试';
   }
-  const best = results.find(r => r.latency >= 0);
-  renderDomainTable(results, best ? best.host : null);
   if (best && clientOk > 0) st.textContent += ' · 推荐: ' + best.host;
 }
 
@@ -1941,11 +2138,11 @@ async function loadStats() {
     if (data.error) { document.getElementById('stats-loading').textContent = data.error; return; }
     document.getElementById('stats-loading').style.display = 'none';
     document.getElementById('stats-body').style.display = 'block';
-    document.getElementById('st-play').textContent = data.data.total.playing;
-    document.getElementById('st-pb').textContent = data.data.total.playbackInfo;
+    document.getElementById('st-req').textContent = (data.data.total.requests || 0).toLocaleString('en-US');
+    document.getElementById('st-traffic').textContent = data.data.total.traffic || '0 B';
     const daily = (data.data.dailyStats||[]).slice(0,10);
-    let t = '<table><tr><th>日期</th><th>播放</th><th>链接</th></tr>';
-    daily.forEach(s => { t += '<tr><td>'+s.date+'</td><td>'+s.playing_count+'</td><td>'+s.playback_info_count+'</td></tr>'; });
+    let t = '<table><tr><th>日期</th><th>请求数</th><th>流量</th></tr>';
+    daily.forEach(s => { t += '<tr><td>'+s.date+'</td><td>'+(s.requests||0).toLocaleString('en-US')+'</td><td>'+s.traffic+'</td></tr>'; });
     document.getElementById('daily-table').innerHTML = t + '</table>';
   } catch(e) { document.getElementById('stats-loading').textContent = '统计加载失败'; }
 }
@@ -1969,8 +2166,8 @@ body{display:flex;align-items:center;justify-content:center;min-height:100vh;pad
 <div class="brand-mark" style="margin:0 auto 20px"></div>
 <h1 class="login-title">管理员登录</h1>
 <p class="login-sub">Admin Login</p>
-<input type="text" id="loginUser" placeholder="用户名 (ADMIN_USERNAME)" autocomplete="username" onkeydown="if(event.key==='Enter')doLogin()">
-<input type="password" id="loginPass" placeholder="密码 (ADMIN_PASSWORD)" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
+<input type="text" id="loginUser" placeholder="用户名（默认 admin）" autocomplete="username" onkeydown="if(event.key==='Enter')doLogin()">
+<input type="password" id="loginPass" placeholder="密码 (ADMIN_TOKEN)" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
 <p id="loginErr" class="login-err"></p>
 <button class="btn" style="width:100%" id="loginBtn" onclick="doLogin()">登录</button>
 <p class="login-link"><a href="/register">用户注册</a></p>
@@ -2016,6 +2213,7 @@ function buildAdminHtml() {
       <div class="toolbar" style="margin:0">
         <button class="btn" onclick="openRouteModal()">添加路由</button>
         <button class="btn btn-outline" onclick="speedtestAll()">全局测速</button>
+        <button class="btn btn-outline" onclick="sendReport()">发送日报</button>
         <div class="search-box">
           <span class="search-icon">⌕</span>
           <input type="text" id="routeSearch" placeholder="搜索备注或路径..." oninput="filterRoutes()">
@@ -2027,7 +2225,7 @@ function buildAdminHtml() {
 
   <div class="card">
     <h2>优选域名测速<span class="h2-en">LATENCY SCAN</span></h2>
-    <p class="muted" style="margin:0 0 14px">测试边缘节点到优选入口的延迟</p>
+    <p class="muted" style="margin:0 0 14px">用当前浏览器网络测试到优选入口的延迟</p>
     <button class="btn" onclick="testDomains()">开始测速</button>
     <div id="adminDomainResult" style="margin-top:18px"></div>
   </div>
@@ -2082,7 +2280,7 @@ function buildAdminHtml() {
         </div>
       </div>
       <button class="btn btn-outline btn-sm" style="margin-top:8px" onclick="addTargetInput()">添加备用线路</button>
-      <p class="form-hint">多个线路按顺序 failover，测速后按延迟排序优选</p>
+      <p class="form-hint">多个线路按顺序 failover，测速结果仅用于本机参考</p>
     </div>
     <div class="form-group">
       <label class="checkbox-label">
@@ -2106,7 +2304,7 @@ let allRoutes=[];
 function closeModal(id){document.getElementById(id).classList.remove('show');}
 function openModal(id){document.getElementById(id).classList.add('show');}
 
-function logout(){document.cookie='admin_token=;path=/;max-age=0';location.reload();}
+function logout(){fetch('/api/logout',{method:'POST'}).finally(function(){location.reload();});}
 
 function showToast(msg){
   var t=document.getElementById('toast');
@@ -2120,6 +2318,44 @@ function getLatencyInfo(ms){
   if(ms<100)return {text:'极快',cls:'tag-fast',color:'#00ff9d'};
   if(ms<300)return {text:'良好',cls:'tag-good',color:'#00e5ff'};
   return {text:'较慢',cls:'tag-slow',color:'#ffb454'};
+}
+
+const OPT_DOMAINS = ${JSON.stringify(OPTIMIZED_DOMAINS)};
+
+function escHtml(v){
+  return String(v==null?'':v).replace(/[&<>"']/g,function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+
+function pingMs(url,timeout){
+  return new Promise(function(resolve){
+    var t0=performance.now();
+    var timer=setTimeout(function(){resolve(-1);},timeout||6000);
+    var done=function(ms){clearTimeout(timer);resolve(ms>=0&&ms<(timeout||6000)?ms:-1);};
+    fetch(url,{mode:'no-cors',cache:'no-store',credentials:'omit'}).then(function(){
+      done(Math.round(performance.now()-t0));
+    }).catch(function(){
+      var img=new Image();
+      var t1=performance.now();
+      var t2=setTimeout(function(){done(-1);},4000);
+      var end=function(){clearTimeout(t2);done(Math.round(performance.now()-t1));};
+      img.onload=end;img.onerror=end;
+      img.src=url+(url.indexOf('?')>=0?'&':'?')+'_='+Date.now();
+    });
+  });
+}
+
+async function probeDomain(item){
+  var host=item.subdomain?item.subdomain+'.'+item.domain:item.domain;
+  var paths=['/cdn-cgi/trace','/favicon.ico','/'];
+  for(var i=0;i<paths.length;i++){
+    var ms=await pingMs('https://'+host+paths[i],7000);
+    if(ms>=0){
+      return {subdomain:item.subdomain,domain:item.domain,name:item.name,host:host,latency:ms,status:ms<100?'fast':ms<300?'good':'slow'};
+    }
+  }
+  return {subdomain:item.subdomain,domain:item.domain,name:item.name,host:host,latency:-1,status:'timeout'};
 }
 
 function addTargetInput(){
@@ -2168,21 +2404,21 @@ function renderRoutes(list){
       const latInfo=getLatencyInfo(lat);
       const tag=idx===0?'<span class="tag tag-fast">主</span>':'<span class="tag tag-slow">备'+idx+'</span>';
       const latDisplay=typeof lat==='number'&&lat>=0?'<span class="target-latency" style="color:'+latInfo.color+'">'+lat+'ms <span class="tag '+latInfo.cls+'">'+latInfo.text+'</span></span>':'<span class="target-latency" style="color:#5d7290">未测速</span>';
-      targetsHtml+='<div class="target-row">'+tag+' <span class="target-url"><code>'+t+'</code></span>'+latDisplay+'</div>';
+      targetsHtml+='<div class="target-row">'+tag+' <span class="target-url"><code>'+escHtml(t)+'</code></span>'+latDisplay+'</div>';
     });
 
-    return '<div class="route-item" data-search="'+(remarkName+' '+r.prefix).toLowerCase()+'">'+
+    return '<div class="route-item" data-search="'+escHtml((remarkName+' '+r.prefix).toLowerCase())+'">'+
       '<div class="route-header">'+
         '<div class="route-title">'+
-          '<h3 class="route-name">'+remarkName+'</h3>'+
-          '<span class="route-path">/'+r.prefix+'</span>'+
+          '<h3 class="route-name">'+escHtml(remarkName)+'</h3>'+
+          '<span class="route-path">/'+escHtml(r.prefix)+'</span>'+
         '</div>'+
       '</div>'+
       '<div class="target-list">'+targetsHtml+'</div>'+
       '<div class="route-meta">'+
         (cacheStatus?'<span class="meta-tag meta-tag-on">缓存 ON</span>':'<span class="meta-tag">缓存 OFF</span>')+
         (compatStatus?'<span class="meta-tag meta-tag-warn">兼容模式</span>':'')+
-        (r.last_play?'<span class="meta-tag">'+r.last_play+'</span>':'')+
+        (r.last_play?'<span class="meta-tag">'+escHtml(r.last_play)+'</span>':'')+
       '</div>'+
       '<div class="route-actions">'+
         '<button class="btn btn-sm btn-outline" onclick="speedtestRoute(\\''+r.prefix+'\\')">测速</button>'+
@@ -2282,37 +2518,73 @@ async function delRoute(prefix){
 }
 
 async function speedtestRoute(prefix){
-  showToast('测速中...');
-  const r=await fetch('/admin/api/speedtest/routes?prefix='+encodeURIComponent(prefix),{method:'POST'});
-  const d=await r.json();
-  const ok=(d.results||[]).filter(x=>x.latency>=0).length;
-  showToast('测速完成，'+ok+'条线路可用');
-  loadRoutes();
+  const route=allRoutes.find(x=>x.prefix===prefix);
+  if(!route){showToast('路由不存在');return;}
+  const targets=String(route.target||'').split(',').map(s=>s.trim()).filter(Boolean);
+  if(!targets.length){showToast('没有可测速的线路');return;}
+  showToast('本机测速中...');
+  const latencies={};
+  const results=await Promise.all(targets.map(async t=>{
+    const ms=await pingMs(t);
+    latencies[t]=ms;
+    return {url:t,latency:ms};
+  }));
+  route.target_latencies=JSON.stringify(latencies);
+  renderRoutes(allRoutes);
+  const ok=results.filter(x=>x.latency>=0).length;
+  showToast('测速完成，'+ok+'/'+results.length+' 条线路可用');
 }
 
 async function speedtestAll(){
-  showToast('全局测速中，请耐心等待...');
-  const r=await fetch('/admin/api/speedtest/routes',{method:'POST'});
-  const d=await r.json();
+  if(!allRoutes.length){showToast('暂无路由');return;}
+  showToast('本机全局测速中...');
+  for(const route of allRoutes){
+    const targets=String(route.target||'').split(',').map(s=>s.trim()).filter(Boolean);
+    const latencies={};
+    for(const t of targets) latencies[t]=await pingMs(t);
+    route.target_latencies=JSON.stringify(latencies);
+  }
+  renderRoutes(allRoutes);
   showToast('全局测速完成');
-  loadRoutes();
+}
+
+async function sendReport(){
+  showToast('正在生成并发送日报...');
+  try{
+    const r=await fetch('/admin/api/report/send',{method:'POST'});
+    const d=await r.json();
+    if(d.ok){
+      const channels=[];
+      if(d.channels?.telegram)channels.push('Telegram');
+      if(d.channels?.bark)channels.push('Bark');
+      showToast('日报已发送到 '+(channels.join(' / ')||'推送渠道')+'（'+d.date+'）');
+    }
+    else{showToast('发送失败：'+(d.error||'未知错误'));}
+  }catch(e){showToast('发送失败：'+e.message);}
 }
 
 async function testDomains(){
-  document.getElementById('adminDomainResult').innerHTML='<p class="muted">测速中...</p>';
-  const r=await fetch('/admin/api/speedtest/domains',{method:'POST'});
-  const d=await r.json();
+  const box=document.getElementById('adminDomainResult');
+  box.innerHTML='<p class="muted">本机测速中...</p>';
+  const results=await Promise.all(OPT_DOMAINS.map(probeDomain));
+  results.sort((a,b)=>{
+    if(a.latency<0&&b.latency<0)return 0;
+    if(a.latency<0)return 1;
+    if(b.latency<0)return -1;
+    return a.latency-b.latency;
+  });
+  const best=results.find(x=>x.latency>=0);
   let h='<table><thead><tr><th>名称</th><th>域名</th><th>延迟</th><th>状态</th></tr></thead><tbody>';
-  (d.results||[]).forEach(x=>{
+  results.forEach(x=>{
     const status=getLatencyInfo(x.latency);
-    h+='<tr'+(d.best===x.host?' class="best"':'')+'>'+
-      '<td>'+(x.name||'—')+'</td>'+
-      '<td><code>'+x.host+'</code></td>'+
-      '<td>'+(x.latency>=0?x.latency+'ms':'超时')+'</td>'+
+    h+='<tr'+(best&&best.host===x.host?' class="best"':'')+'>'+
+      '<td>'+escHtml(x.name||'—')+'</td>'+
+      '<td><code>'+escHtml(x.host)+'</code></td>'+
+      '<td>'+(x.latency>=0?Number(x.latency)+'ms':'超时')+'</td>'+
       '<td><span class="tag '+status.cls+'">'+status.text+'</span></td>'+
     '</tr>';
   });
-  document.getElementById('adminDomainResult').innerHTML=h+'</tbody></table>';
+  box.innerHTML=h+'</tbody></table>';
 }
 
 document.getElementById('routePrefix').addEventListener('input',function(){
@@ -2417,24 +2689,9 @@ export default {
 
     if (url.pathname === '/api/edge-info') return json(await getEdgeInfo(request));
 
-    if (url.pathname === '/api/ping-host') {
-      const host = (url.searchParams.get('host') || '').replace(/^https?:\/\//, '').split('/')[0];
-      if (!host) return json({ ms: -1, error: 'missing host' });
-      const ms = await speedtestUrl(`https://${host}/cdn-cgi/trace`, 5000);
-      return json({ ms, host });
-    }
-
     if (url.pathname === '/api/domains/speed') {
       const cacheKey = getClientCacheKey(request);
       if (request.method === 'GET') {
-        if (url.searchParams.get('edge') === '1') {
-          const data = await speedtestOptimizedFromEdge();
-          const results = data.results.map((r) => ({
-            subdomain: r.subdomain, domain: r.domain, name: r.name, host: r.host,
-            latency: r.latency, status: r.status, source: 'edge',
-          }));
-          return json({ cached: false, edge: true, best: data.best, results });
-        }
         if (!env.DB) return json({ cached: false, cacheKey, results: [] });
         const cached = await loadDomainSpeedCache(env, cacheKey);
         if (cached) return json(cached);
@@ -2442,17 +2699,24 @@ export default {
       }
       if (request.method === 'POST') {
         if (!env.DB) return json({ success: false, error: 'DB not bound' }, 500);
-        const body = await request.json();
-        const rows = (body.results || []).map((r) => ({
-          subdomain: r.subdomain,
-          domain: r.domain,
-          name: r.name || r.display_name,
-          latency: r.latency,
-          status: r.status || latencyStatus(r.latency),
-        }));
+        const body = await request.json().catch(() => ({}));
+        const known = new Map(OPTIMIZED_DOMAINS.map((d) => [optimizedHost(d), d]));
+        const rows = (body.results || []).map((r) => {
+          const item = known.get(optimizedHost(r));
+          if (!item) return null;
+          const n = Number(r.latency);
+          const latency = Number.isFinite(n) ? n : -1;
+          return {
+            subdomain: item.subdomain,
+            domain: item.domain,
+            name: item.name,
+            latency,
+            status: latencyStatus(latency),
+          };
+        }).filter(Boolean);
         await saveDomainSpeedCache(env, cacheKey, rows);
         const best = rows.filter((r) => r.latency >= 0).sort((a, b) => a.latency - b.latency)[0];
-        return json({ success: true, best: best ? `${best.subdomain}.${best.domain}` : null });
+        return json({ success: true, best: best ? optimizedHost(best) : null });
       }
     }
 
@@ -2461,7 +2725,7 @@ export default {
         const body = await request.json();
         const username = (body.username || '').trim().toLowerCase();
         const password = body.password || '';
-        return adminLoginResponse(request, env, username, password);
+        return await adminLoginResponse(request, env, username, password);
       } catch (e) {
         return json({ ok: false, error: e.message }, 400);
       }
@@ -2473,6 +2737,7 @@ export default {
 
     if (url.pathname === '/api/register' && request.method === 'POST') {
       if (!env.DB) return json({ error: 'DB 未绑定' }, 500);
+      if (!getSessionSecret(env)) return json({ error: '服务端未配置 SESSION_SECRET，暂时无法注册' }, 503);
       try {
         const body = await request.json().catch(() => ({}));
         const username = (body.username || '').trim().toLowerCase();
@@ -2555,17 +2820,19 @@ export default {
 
     if (url.pathname === '/api/login' && request.method === 'POST') {
       if (!env.DB) return json({ error: 'DB 未绑定' }, 500);
+      if (!getSessionSecret(env)) return json({ error: '服务端未配置 SESSION_SECRET，暂时无法登录' }, 503);
       const body = await request.json().catch(() => ({}));
       const username = (body.username || '').trim().toLowerCase();
       const password = body.password || '';
       if (!username || !password) return json({ error: '请填写完整' }, 400);
 
-      // 管理员账号：环境变量 ADMIN_USERNAME / ADMIN_PASSWORD 匹配则直接登录为管理员
+      // 管理员账号：环境变量 ADMIN_USERNAME / ADMIN_TOKEN 匹配则直接登录为管理员
       const adminUser = getAdminCredUser(env);
       const adminPass = getAdminCredPass(env);
       if (adminUser && adminPass && username === adminUser && password === adminPass) {
+        const token = await signAdminToken(env);
         const secure = url.protocol === 'https:' ? '; Secure' : '';
-        const cookie = `admin_token=${encodeURIComponent(adminPass)}; Path=/; Max-Age=2592000; SameSite=Lax${secure}`;
+        const cookie = `admin_token=${token}; Path=/; Max-Age=${SESSION_TTL}; SameSite=Lax; HttpOnly${secure}`;
         return new Response(JSON.stringify({ ok: true, role: 'admin' }), {
           status: 200,
           headers: { 'Content-Type': 'application/json', 'Set-Cookie': cookie, 'Cache-Control': 'no-store' },
@@ -2593,9 +2860,11 @@ export default {
     }
 
     if (url.pathname === '/api/logout') {
-      return new Response(JSON.stringify({ ok: true }), {
-        headers: { 'Content-Type': 'application/json', 'Set-Cookie': 'user_token=; Path=/; Max-Age=0' },
-      });
+      const headers = new Headers({ 'Content-Type': 'application/json' });
+      const secure = url.protocol === 'https:' ? '; Secure' : '';
+      headers.append('Set-Cookie', `user_token=; Path=/; Max-Age=0; SameSite=Lax; HttpOnly${secure}`);
+      headers.append('Set-Cookie', `admin_token=; Path=/; Max-Age=0; SameSite=Lax; HttpOnly${secure}`);
+      return new Response(JSON.stringify({ ok: true }), { headers });
     }
 
     if (url.pathname === '/api/me') {
@@ -2605,7 +2874,7 @@ export default {
       return json({ ok: true, username: u.username, role: u.role });
     }
 
-    if (url.pathname === '/api/user/routes' || url.pathname === '/api/user/speedtest/routes') {
+    if (url.pathname === '/api/user/routes') {
       if (!env.DB) return json({ error: 'DB 未绑定' }, 500);
       const u = await getUser(request, env);
       if (!u) return json({ error: '未登录' }, 401);
@@ -2681,11 +2950,12 @@ export default {
 
     // ==================== 子域名路由 ====================
     const hostname = url.hostname.toLowerCase();
-    const { publicEntryDomain, userBaseDomain } = getDomainConfig(env);
+    const { publicEntryDomain, userBaseDomain, adminHost } = getDomainConfig(env);
 
-    // BASE_DOMAIN itself is the public trial entry and does not require a
-    // registered user-domain row.
-    if (publicEntryDomain && hostname === publicEntryDomain) {
+    // BASE_DOMAIN / ADMIN_HOST are admin/default entries and do not require a
+    // registered user-domain row. Requests that are not /https://... fall
+    // through to the global routes below.
+    if ((publicEntryDomain && hostname === publicEntryDomain) || (adminHost && hostname === adminHost)) {
       const directProxy = parseDirectProxyTarget(url.pathname, url.search);
       if (directProxy.matched) {
         if (directProxy.error) return new Response(directProxy.error, { status: 400 });
@@ -2696,7 +2966,7 @@ export default {
       }
     }
 
-    if (hostname !== publicEntryDomain && userBaseDomain && hostname.endsWith('.' + userBaseDomain) && hostname !== userBaseDomain) {
+    if (hostname !== publicEntryDomain && hostname !== adminHost && userBaseDomain && hostname.endsWith('.' + userBaseDomain) && hostname !== userBaseDomain) {
       const subdomain = hostname.slice(0, hostname.length - ('.' + userBaseDomain).length);
       if (subdomain && subdomain.length >= 1 && subdomain.length <= 32 && /^[a-z0-9-]+$/.test(subdomain)) {
         if (env.DB) {
@@ -2720,7 +2990,6 @@ export default {
               matchedPrefix: resolved.matchedPrefix,
               matchedRouteId: resolved.matchedRouteId,
               matchedUserId: resolved.matchedUserId,
-              needsSpeedTest: resolved.needsSpeedTest,
               preferredHost: row.preferred_host,
             });
           }
@@ -2751,7 +3020,12 @@ export default {
       matchedPrefix: resolved.matchedPrefix,
       matchedRouteId: resolved.matchedRouteId,
       matchedUserId: resolved.matchedUserId,
-      needsSpeedTest: resolved.needsSpeedTest,
     });
+  },
+
+  // 每日日报：UTC 15:00 = 北京时间 23:00
+  // 23:00 发送当天数据；手动“发送日报”仍默认前一天完整数据
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(sendDailyReport(env, { date: shanghaiDateKey(), hosts: getStatsHosts(env) }));
   },
 };

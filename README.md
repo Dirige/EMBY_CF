@@ -4,19 +4,19 @@
 
 **Emby 反向代理 · 多用户路由面板**
 
-`HTTP/HTTPS` · `WebSocket` · `D1` · `Auto DNS` · `邀请制` · `测速`
+`HTTP/HTTPS` · `WebSocket` · `D1` · `自动 DNS` · `邀请制` · `测速` · `日报推送`
 
 ![Platform](https://img.shields.io/badge/Cloudflare-Workers-F38020?style=flat-square&logo=cloudflare&logoColor=white)
 ![Database](https://img.shields.io/badge/D1-Database-00E5FF?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-00FF9D?style=flat-square)
 
-[部署教程](DEPLOY.md) · [必要配置](#必要配置-config) · [常见问题](#常见问题-faq)
+[部署教程](DEPLOY.md) · [环境变量](#环境变量) · [API-Token-权限](#api-token-权限配置) · [常见问题](#常见问题)
 
 </div>
 
 ---
 
-## 功能特性 <sub>FEATURES</sub>
+## 功能特性
 
 | 功能 | 说明 |
 |---|---|
@@ -26,31 +26,107 @@
 | 邀请码注册 | 管理员生成邀请码，用户凭邀请码注册 |
 | 用户子域名 | 注册后自动创建 `用户名.根域名` 三级子域名 |
 | 自动 DNS | 自动识别域名、IPv4、IPv6，对应创建 `CNAME` / `A` / `AAAA` 记录 |
-| 优选入口 | 用户可将子域名指向优选域名或优选 IP，支持延迟测速并缓存结果 |
+| 优选入口 | 用户可将子域名指向优选域名或优选 IP，支持浏览器本地延迟测速 |
+| 每日日报 | 北京时间 23:00 统计请求数、流量、访问量、热门路由，推送到 Telegram / Bark，后台也可手动发送 |
 | 数据库维护 | 后台可重置业务表，重新初始化 D1 表结构 |
 
-## 路由模型 <sub>ROUTING</sub>
+## 路由模型
 
-| 版本 | 文件 | 适用场景 |
-|---|---|---|
-| 多用户版 | `worker.js` | 多用户注册、邀请码、独立子域名和独立路由 |
-| 单用户版 | `single-user/worker.js` | 个人自用，不需要邀请码 |
+本仓库是多用户版，入口为根目录的 `worker.js`。
 
 ### 三种访问方式
 
 | 方式 | 地址示例 | 配置位置 |
 |---|---|---|
-| 通用反代 | `https://入口域名/https://emby.example.com:8096` | 目标直接写在 URL 中，适合临时访问 |
-| 管理员全局路由 | `https://入口域名/emby` | 管理员后台「路由管理」 |
+| 通用反代 | `https://你的反代域名/https://emby.example.com:8096` | 目标直接写在 URL 中，适合临时访问 |
+| 管理员全局路由 | `https://你的反代域名/emby` | 管理员后台「路由管理」 |
 | 用户独立路由 | `https://用户名.根域名/emby` | 用户后台「我的路由」 |
 
 - 通用反代的目标支持 `http://`、`https://`、端口、路径；播放直链会自动改写回反代入口
 - 用户路由按子域名隔离，同一路径只需在同一用户内不重复
 - 用户子域名下无对应路由时，自动回落到管理员全局路由
+- `CF_DOMAIN` 填完整反代入口域名，例如 `fd.example.com`，程序会自动确定用户子域名根域名：注册 `111` 后地址为 `111.example.com`
 
-`BASE_DOMAIN` 填完整公共入口，例如 `fd.dirige.de5.net`，程序自动取其上一级作为用户子域名根域名：注册 `111` 后地址为 `111.dirige.de5.net`。
+## 快速开始
 
-## 后台入口 <sub>ENDPOINTS</sub>
+1. Fork 本仓库
+2. 在 `Settings → Secrets and variables → Actions` 添加部署用 Secrets（见 [DEPLOY.md](DEPLOY.md)）
+3. 在 `Actions → Deploy to Cloudflare Workers → Run workflow` 运行部署
+4. 部署完成后，到 Cloudflare 控制台给 Worker 添加运行变量，至少填写 `ADMIN_TOKEN`
+5. 打开 `https://你的反代域名/admin` 登录管理员后台
+
+> [!TIP]
+> 工作流绑定了 push 触发，每次 push 到 `main` / `master` 都会自动重新部署。只想手动部署时，在 Actions 页面禁用该工作流。
+
+## 环境变量
+
+在 Cloudflare 控制台进入 Worker → `Settings（设置）` → `Variables and Secrets（变量和机密）` 配置。
+
+| 变量名 | 必填 | 说明 |
+|---|---|---|
+| `ADMIN_TOKEN` | ✅ 必填 | 管理员登录密码（最高权限，永远有效） |
+| `CF_API_TOKEN` | 选填 | CF API Token（流量统计 / DNS 管理 / 区域调度用），按下面「API Token 权限配置」创建 |
+| `CF_ZONE_ID` | 选填 | 你域名的 Zone ID |
+| `CF_DOMAIN` | 选填 | 你的反代域名 |
+| `TG_BOT_TOKEN` | 选填 | Telegram Bot Token（保号提醒推送；BotFather 创建机器人获取） |
+| `TG_CHAT_ID` | 选填 | 管理员 Chat ID（保号提醒推送目标；userinfobot 获取） |
+| `BARK_KEY` | 选填 | Bark 设备 Key（iOS 系统级推送保号提醒；App 首页 `api.day.app/` 末尾） |
+| `BARK_LEVEL` | 选填 | Bark 推送级别：`active`（默认）/ `timeSensitive` / `critical` / `passive` |
+
+**填写建议**
+
+- `ADMIN_TOKEN`、`CF_API_TOKEN`、`TG_BOT_TOKEN`、`BARK_KEY` 建议使用 **Secret（机密）** 类型
+- `CF_DOMAIN`、`CF_ZONE_ID`、`TG_CHAT_ID`、`BARK_LEVEL` 可以使用 **Variable（变量）** 类型
+- 管理员用户名默认是 `admin`；如需修改，可额外设置 `ADMIN_USERNAME`
+- 建议额外设置随机的 `SESSION_SECRET` 用于会话签名；未设置时自动回退到 `ADMIN_TOKEN`
+- 不配置 `TG_*` 或 `BARK_KEY` 时，日报不会推送，但其他功能不受影响
+
+### 旧变量名兼容
+
+已有部署不需要改变量名，代码会自动兼容：
+
+| 新变量名 | 兼容旧变量名 |
+|---|---|
+| `CF_DOMAIN` | `BASE_DOMAIN` |
+| `TG_BOT_TOKEN` | `TELEGRAM_BOT_TOKEN` |
+| `TG_CHAT_ID` | `TELEGRAM_CHAT_ID` |
+| `STATS_HOSTS` | 统计域名白名单，建议继续保留 |
+| `ADMIN_HOST` | 管理员默认入口；未设置时回退 `CF_DOMAIN` |
+| `CF_DNS_API_TOKEN` | DNS 专用 Token；未设置时回退 `CF_API_TOKEN` |
+
+> [!IMPORTANT]
+> 不要在 `wrangler.toml` 中写 `ADMIN_TOKEN = ""` 或任何真实密钥，否则部署时可能覆盖控制台中的值。仓库中的 `wrangler.toml` 只保留结构和占位符。
+
+## API Token 权限配置
+
+在 Cloudflare 控制台 → 右上角头像 → `My Profile（我的个人资料）` → `API Tokens（API 令牌）` → `Create Token（创建令牌）` → `Custom token（自定义令牌）`。
+
+### 1. 权限（Permissions）
+
+| 权限类型 | 资源 | 权限 |
+|---|---|---|
+| 账户 Account | Workers 脚本 Worker Scripts | 编辑 Edit |
+| 区域 Zone | 区域设置 Zone Settings | 读取 Read |
+| 区域 Zone | 清除缓存 Cache Purge | 清除 Purge |
+| 区域 Zone | DNS | 编辑 Edit |
+| 区域 Zone | Analytics | 读取 Read |
+
+### 2. 账户资源（Account Resources）
+
+选择 `包括 Include` → 勾选你的账号（你的邮箱@gmail.com）。
+
+### 3. 区域资源（Zone Resources）
+
+选择 `包括 Include` → `特定区域 Specific zone` → 勾选你的反代域名所在区域。
+
+### 4. 客户端 IP 地址筛选
+
+默认不设置（留空即可）。
+
+> [!NOTE]
+> 如果使用 GitHub Actions 自动创建 D1 数据库和 Worker 路由，还需要额外添加：`Account → D1 → Edit`、`Zone → Workers Routes → Edit`。已经手动创建好 D1 和路由的，可以不加这两项。
+
+## 后台入口
 
 | 入口 | 用途 |
 |---|---|
@@ -60,29 +136,9 @@
 | `/health` | Worker 健康状态 |
 
 > [!WARNING]
-> `/stats` 为公开接口，无鉴权，任何人可查看播放统计，请勿对外泄露地址。
+> `/stats` 为公开接口，无鉴权，任何人可查看流量统计，请勿对外泄露地址。
 
-## 必要配置 <sub>CONFIG</sub>
-
-以下值填写在 GitHub Secrets 或 Worker 的 `Variables and Secrets` 中，**不要写入 `wrangler.toml`**。
-
-| 名称 | 必需 | 位置 | 说明 |
-|---|:---:|---|---|
-| `CF_API_TOKEN` | ✅ | GitHub Secrets | 部署 Worker、创建 D1、配置 Worker 路由 |
-| `CF_ACCOUNT_ID` | ✅ | GitHub Secrets | Cloudflare 账户 ID |
-| `BASE_DOMAIN` | ✅ | GitHub Secrets | 完整公共入口，如 `fd.dirige.de5.net` |
-| `CF_ZONE_ID` | ✅ | GitHub Secrets | `BASE_DOMAIN` 所在 Zone ID |
-| `CF_DNS_API_TOKEN` | ✅ | GitHub Secrets | Worker 运行时自动创建和修改 DNS |
-| `ADMIN_USERNAME` | ✅ | Worker 变量 | 管理员用户名，默认 `admin` |
-| `ADMIN_PASSWORD` | ✅ | Worker Secret | 管理员密码，部署后手动填写 |
-| `SESSION_SECRET` | ⚠️ | Worker Secret | 会话签名密钥，部署后手动填写 |
-| `CF_WORKER_NAME` | ⚪ | GitHub Secrets | Worker 名称，默认 `emby-proxy` |
-
-> [!IMPORTANT]
-> 不设置 `SESSION_SECRET` 时，会话签名回退到源码公开的固定密钥，**任何人可伪造管理员登录态**，务必设置为随机长字符串。
-> 不要在 `wrangler.toml` 中写 `ADMIN_PASSWORD = ""`，否则部署会覆盖控制台中已填密码。
-
-## D1 数据表 <sub>DATABASE</sub>
+## D1 数据表
 
 Worker 首次收到请求时自动创建或迁移表结构，**无需手动执行 SQL**。
 
@@ -92,45 +148,45 @@ Worker 首次收到请求时自动创建或迁移表结构，**无需手动执�
 | `user_domains` | 用户子域名、优选目标、DNS 记录 ID |
 | `routes` | 管理员全局路由和用户独立路由 |
 | `visitor_logs` / `request_stats` | 访问日志；按路由和日期统计请求量 |
-| `auto_emby_daily_stats` | Emby 播放与 PlaybackInfo 日统计 |
+| `proxy_stats_hourly` | 按小时统计请求数与实际转发流量（日报数据源） |
+| `auto_emby_daily_stats` | 旧版播放统计（已停用，仅保留用于重置） |
 | `domain_speed_cache` / `domain_best_cache` | 优选测速缓存；最佳优选入口缓存 |
 
 「重置数据库」会删除并重建以上业务表，不影响 D1 实例和 Worker 环境变量。
 
-## 快速部署 <sub>DEPLOY</sub>
+## 日报推送
 
-1. Fork 本仓库
-2. `Settings` → `Secrets and variables` → `Actions` 添加必要 Secrets（见「必要配置」）
-3. `Actions` → `Deploy to Cloudflare Workers` → `Run workflow`
-4. 部署完成后在 Cloudflare 控制台手动补填 `ADMIN_PASSWORD`、`SESSION_SECRET`
+- 每天北京时间 **23:00** 自动发送（Cron：`0 15 * * *`）
+- 支持 Telegram 和 Bark 两个渠道，可同时配置
+- Telegram：配置 `TG_BOT_TOKEN` + `TG_CHAT_ID`
+- Bark：配置 `BARK_KEY`，可选 `BARK_LEVEL`
+- 管理员后台「路由管理」可以手动点击「发送日报」
 
-> [!TIP]
-> 工作流绑定了 push 触发，每次 push 到 `master` / `main` 会自动重新部署；只想手动部署可在 Actions 页面禁用。详细步骤见 [DEPLOY.md](DEPLOY.md)。
-
-## 本地检查 <sub>LINT</sub>
+## 本地检查
 
 ```bash
 node --check worker.js        # 需要 Node.js ≥ 22.7（ESM 语法检测）
 wrangler deploy --dry-run     # 无需 Node 版本要求
 ```
 
-## 常见问题 <sub>FAQ</sub>
+## 常见问题
 
 | 问题 | 处理方式 |
 |---|---|
-| `/admin` 登录失败 | 到 Worker 的 `Variables and Secrets` 手动填写 `ADMIN_PASSWORD` |
-| 会话签名使用公开密钥 | 立即设置 `SESSION_SECRET` 机密 |
-| 注册失败：DNS 自动配置未完成 | 检查 `CF_ZONE_ID` 与 `CF_DNS_API_TOKEN` |
+| `/admin` 登录失败 | 到 Worker 的 `Variables and Secrets` 手动填写 `ADMIN_TOKEN`，用户名默认 `admin` |
+| 登录/注册返回 503 | 未配置 `ADMIN_TOKEN`，且 `SESSION_SECRET` 也为空，无法签发会话 |
+| 注册失败：DNS 自动配置未完成 | 检查 `CF_ZONE_ID` 与 `CF_API_TOKEN`（或 `CF_DNS_API_TOKEN`） |
 | 注册失败：优选目标非法 | 只填纯域名、IPv4 或 IPv6，不带路径、端口、账号密码 |
 | 用户子域名访问 404 | 确认存在 `*.用户域名根/*` Worker 路由（Actions 部署自动创建） |
 | 用户路由访问到全局路由 | 用户未创建同名路径，系统回落到管理员全局路由 |
 | 邀请码释放后用户名仍占用 | 确认已部署最新版本；释放邀请码会同步删除关联普通用户 |
+| 日报没有收到 | 检查 `TG_BOT_TOKEN` / `TG_CHAT_ID` 或 `BARK_KEY` 是否填写正确 |
 | D1 表结构异常 | 管理员后台执行「重置数据库」重新初始化 |
 
 ---
 
-## 声明 · 许可 <sub>DISCLAIMER</sub>
+## 声明 · 许可
 
 本项目仅用于学习、研究和自有服务代理测试。请遵守当地法律法规、Cloudflare 服务条款和上游服务条款，使用产生的一切后果由使用者自行承担。
 
-Telegram：<https://t.me/+7cbXthaBajszNjI1> · License：MIT
+Telegram 交流群：<https://t.me/+7cbXthaBajszNjI1> · License：MIT
