@@ -1,0 +1,321 @@
+name: Deploy to Cloudflare Workers
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  check-secrets:
+    runs-on: ubuntu-latest
+    name: 检查必需变量
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - name: 检查必需 Secrets
+        id: check
+        env:
+          CF_DOMAIN: ${{ secrets.CF_DOMAIN }}
+          BASE_DOMAIN: ${{ secrets.BASE_DOMAIN }}
+        run: |
+          echo "🔍 检查必需的 GitHub Secrets..."
+          echo ""
+          
+          MISSING=""
+          DOMAIN="${CF_DOMAIN:-$BASE_DOMAIN}"
+          
+          if [ -z "${{ secrets.CF_API_TOKEN }}" ]; then
+            echo "❌ CF_API_TOKEN - Cloudflare API Token (必需)"
+            MISSING="true"
+          else
+            echo "✅ CF_API_TOKEN"
+          fi
+          
+          if [ -z "${{ secrets.CF_ACCOUNT_ID }}" ]; then
+            echo "❌ CF_ACCOUNT_ID - Cloudflare Account ID (必需)"
+            MISSING="true"
+          else
+            echo "✅ CF_ACCOUNT_ID"
+          fi
+          
+          if [ -z "$DOMAIN" ]; then
+            echo "❌ CF_DOMAIN（或旧名 BASE_DOMAIN）- 你的反代域名 (必需)"
+            MISSING="true"
+          else
+            echo "✅ CF_DOMAIN = $DOMAIN"
+          fi
+          
+          if [ -z "${{ secrets.CF_ZONE_ID }}" ]; then
+            echo "❌ CF_ZONE_ID - Cloudflare Zone ID (Worker 路由和自动 DNS 必需)"
+            MISSING="true"
+          else
+            echo "✅ CF_ZONE_ID = ${{ secrets.CF_ZONE_ID }}"
+          fi
+          
+          echo ""
+          echo "--- 可选变量 ---"
+          
+          if [ -z "${{ secrets.CF_WORKER_NAME }}" ]; then
+            echo "⚪ CF_WORKER_NAME - Worker名称 (可选，默认: fd)"
+          else
+            echo "✅ CF_WORKER_NAME = ${{ secrets.CF_WORKER_NAME }}"
+          fi
+
+          if [ -z "${{ secrets.CF_DNS_API_TOKEN }}" ]; then
+            echo "⚪ CF_DNS_API_TOKEN - DNS 编辑令牌（可选，默认复用 CF_API_TOKEN）"
+          else
+            echo "✅ CF_DNS_API_TOKEN"
+          fi
+
+          if [ -z "${{ secrets.CF_D1_ID }}" ]; then
+            echo "⚪ CF_D1_ID - 已有 D1 数据库 ID（可选，填写后跳过 D1 查询）"
+          else
+            echo "✅ CF_D1_ID"
+          fi
+          
+          echo ""
+          if [ "$MISSING" = "true" ]; then
+            echo "❌ 缺少必需的变量！请在 GitHub 仓库设置中添加以上标记为 ❌ 的变量。"
+            echo "GitHub → Settings → Secrets and variables → Actions → New repository secret"
+            echo "ready=no" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            echo "✅ 所有必需的变量都已配置！"
+            echo "ready=yes" >> $GITHUB_OUTPUT
+          fi
+
+  deploy:
+    runs-on: ubuntu-latest
+    name: 部署到 Cloudflare Workers
+    needs: check-secrets
+    if: needs.check-secrets.outputs.ready == 'yes'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Wrangler
+        run: npm install -g wrangler@4
+
+      - name: 查看 Wrangler 版本
+        run: wrangler --version
+
+      - name: 获取或创建 D1 数据库
+        id: get-db-id
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_D1_ID: ${{ secrets.CF_D1_ID }}
+          CF_WORKER_NAME: ${{ secrets.CF_WORKER_NAME }}
+        run: |
+          if [ -n "$CF_D1_ID" ]; then
+            echo "✅ 使用 CF_D1_ID: $CF_D1_ID"
+            echo "DATABASE_ID=$CF_D1_ID" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          WORKER_NAME="${CF_WORKER_NAME:-fd}"
+          DATABASE_ID=""
+
+          echo "🔍 尝试获取已有数据库 ID..."
+          if LIST_RESPONSE=$(wrangler d1 list 2>&1); then
+            echo "$LIST_RESPONSE"
+            DATABASE_ID=$(echo "$LIST_RESPONSE" | grep -w "fd" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
+          else
+            echo "⚠️ wrangler d1 list 查询失败，尝试读取现有 Worker 的 D1 绑定..."
+          fi
+
+          if [ -z "$DATABASE_ID" ]; then
+            echo "🔍 读取 Worker $WORKER_NAME 的绑定..."
+            SETTINGS=$(curl -s "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$WORKER_NAME/settings" \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              -H "Content-Type: application/json")
+            DATABASE_ID=$(echo "$SETTINGS" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next((b.get("id") or b.get("database_id") or "" for b in data.get("result",{}).get("bindings",[]) if b.get("type")=="d1" and b.get("name")=="DB"), ""))' 2>/dev/null || true)
+          fi
+
+          if [ -n "$DATABASE_ID" ]; then
+            echo "✅ 找到已有数据库 ID: $DATABASE_ID"
+            echo "DATABASE_ID=$DATABASE_ID" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "📦 数据库不存在，正在创建..."
+          if ! CREATE_RESPONSE=$(wrangler d1 create fd 2>&1); then
+            echo "❌ wrangler d1 create 失败，Cloudflare 返回的完整内容如下："
+            echo "$CREATE_RESPONSE"
+            echo ""
+            echo "处理方法（三选一）："
+            echo "1. 给 CF_API_TOKEN 增加 Account → D1 → Edit 权限；"
+            echo "2. 在 GitHub Secrets 添加 CF_D1_ID（Cloudflare 控制台中的 D1 数据库 ID）；"
+            echo "3. 在 Cloudflare 控制台手动创建 D1，并填写 CF_D1_ID。"
+            exit 1
+          fi
+          echo "$CREATE_RESPONSE"
+          DATABASE_ID=$(echo "$CREATE_RESPONSE" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
+          if [ -n "$DATABASE_ID" ]; then
+            echo "✅ 数据库创建成功，ID: $DATABASE_ID"
+            echo "DATABASE_ID=$DATABASE_ID" >> $GITHUB_OUTPUT
+          else
+            echo "❌ 未获取到数据库 ID，请手动创建 D1 并添加 CF_D1_ID"
+            exit 1
+          fi
+
+      - name: 配置 wrangler.toml
+        run: |
+          echo "⚙️ 配置 wrangler.toml..."
+          
+          WORKER_NAME="${{ secrets.CF_WORKER_NAME }}"
+          if [ -z "$WORKER_NAME" ]; then
+            WORKER_NAME="fd"
+          fi
+          sed -i "s/^name = .*/name = \"$WORKER_NAME\"/" wrangler.toml
+          # 运行变量（CF_DOMAIN / CF_ZONE_ID / ADMIN_TOKEN 等）统一在 Cloudflare 控制台配置，
+          # 不写入 wrangler.toml，避免部署时覆盖控制台里已修正的值。
+          echo "   Worker 名称: $WORKER_NAME"
+
+          if [ -n "${{ steps.get-db-id.outputs.DATABASE_ID }}" ]; then
+            sed -i "s|^database_id = .*|database_id = \"${{ steps.get-db-id.outputs.DATABASE_ID }}\"|g" wrangler.toml
+            echo "   DATABASE_ID: ${{ steps.get-db-id.outputs.DATABASE_ID }}"
+          else
+            echo "❌ 未获取到 D1 数据库 ID，已停止部署。"
+            echo "   请在 GitHub Secrets 添加 CF_D1_ID，或给 CF_API_TOKEN 增加 D1 权限。"
+            exit 1
+          fi
+
+      - name: 配置 Worker DNS 编辑令牌
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_DNS_API_TOKEN: ${{ secrets.CF_DNS_API_TOKEN }}
+        run: |
+          SECRET_VALUE="${CF_DNS_API_TOKEN:-$CLOUDFLARE_API_TOKEN}"
+          if printf '%s' "$SECRET_VALUE" | wrangler secret put CF_DNS_API_TOKEN; then
+            echo "✅ CF_DNS_API_TOKEN 已写入 Worker"
+          else
+            echo "⚠️ CF_DNS_API_TOKEN 写入失败，已跳过。"
+            echo "   请到 Cloudflare 控制台 → Worker → Variables and Secrets 手动添加。"
+          fi
+
+      - name: 显示配置文件
+        run: cat wrangler.toml
+
+      - name: 部署到 Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CF_API_TOKEN }}
+          accountId: ${{ secrets.CF_ACCOUNT_ID }}
+          command: deploy
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+
+      - name: 配置 Worker 路由
+        env:
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_WORKER_NAME: ${{ secrets.CF_WORKER_NAME }}
+          CF_DOMAIN: ${{ secrets.CF_DOMAIN }}
+          BASE_DOMAIN: ${{ secrets.BASE_DOMAIN }}
+        run: |
+          echo "🌐 配置 Worker 路由..."
+
+          if [ -z "$CF_WORKER_NAME" ]; then
+            CF_WORKER_NAME="fd"
+          fi
+
+          PUBLIC_ENTRY_DOMAIN="${CF_DOMAIN:-$BASE_DOMAIN}"
+          LABEL_COUNT=$(echo "$PUBLIC_ENTRY_DOMAIN" | awk -F. '{print NF}')
+          if [ "$LABEL_COUNT" -ge 3 ]; then
+            USER_BASE_DOMAIN="${PUBLIC_ENTRY_DOMAIN#*.}"
+          else
+            USER_BASE_DOMAIN="$PUBLIC_ENTRY_DOMAIN"
+          fi
+          if [ "$LABEL_COUNT" -lt 2 ] || [ -z "$USER_BASE_DOMAIN" ]; then
+            echo "❌ CF_DOMAIN 至少是两段域名，例如 example.com 或 fd.example.com"
+            exit 1
+          fi
+
+          ROUTE_PATTERN="${PUBLIC_ENTRY_DOMAIN}/*"
+          WILDCARD_ROUTE_PATTERN="*.${USER_BASE_DOMAIN}/*"
+
+          echo "   路由模式: $ROUTE_PATTERN"
+          echo "   Worker 名称: $CF_WORKER_NAME"
+
+          EXISTING_ROUTES=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/workers/routes" \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            -H "Content-Type: application/json")
+
+          if echo "$EXISTING_ROUTES" | grep -q "\"pattern\":\"$ROUTE_PATTERN\""; then
+            echo "✅ 路由 $ROUTE_PATTERN 已存在"
+          else
+            CREATE_RESPONSE=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/workers/routes" \
+              -H "Authorization: Bearer $CF_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"pattern\":\"$ROUTE_PATTERN\",\"script\":\"$CF_WORKER_NAME\"}")
+
+            if echo "$CREATE_RESPONSE" | grep -qE '"success"\s*:\s*true'; then
+              echo "✅ 路由 $ROUTE_PATTERN 创建成功"
+            else
+              echo "❌ 路由创建失败: $CREATE_RESPONSE"
+            fi
+          fi
+
+          if echo "$EXISTING_ROUTES" | grep -q "\"pattern\":\"$WILDCARD_ROUTE_PATTERN\""; then
+            echo "✅ 路由 $WILDCARD_ROUTE_PATTERN 已存在"
+          else
+            CREATE_WILDCARD_RESPONSE=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/workers/routes" \
+              -H "Authorization: Bearer $CF_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"pattern\":\"$WILDCARD_ROUTE_PATTERN\",\"script\":\"$CF_WORKER_NAME\"}")
+
+            if echo "$CREATE_WILDCARD_RESPONSE" | grep -qE '"success"\s*:\s*true'; then
+              echo "✅ 路由 $WILDCARD_ROUTE_PATTERN 创建成功"
+            else
+              echo "❌ 路由创建失败: $CREATE_WILDCARD_RESPONSE"
+            fi
+          fi
+
+      - name: 创建 DNS 记录
+        continue-on-error: true
+        env:
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_DOMAIN: ${{ secrets.CF_DOMAIN }}
+          BASE_DOMAIN: ${{ secrets.BASE_DOMAIN }}
+        run: |
+          echo "📝 创建 DNS 记录..."
+
+          PUBLIC_ENTRY_DOMAIN="${CF_DOMAIN:-$BASE_DOMAIN}"
+          FULL_RECORD_NAME="$PUBLIC_ENTRY_DOMAIN"
+          LABEL_COUNT=$(echo "$PUBLIC_ENTRY_DOMAIN" | awk -F. '{print NF}')
+          if [ "$LABEL_COUNT" -lt 3 ]; then
+            echo "⚪ $PUBLIC_ENTRY_DOMAIN 是两段根域名，跳过自动 CNAME；请在 Cloudflare 控制台手动配置 DNS"
+            exit 0
+          fi
+          TARGET_DOMAIN="${PUBLIC_ENTRY_DOMAIN#*.}"
+
+          echo "   DNS 记录: $FULL_RECORD_NAME"
+
+          EXISTING_DNS=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records?name=$FULL_RECORD_NAME&per_page=100" \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            -H "Content-Type: application/json")
+
+          if echo "$EXISTING_DNS" | grep -q "\"name\":\"$FULL_RECORD_NAME\""; then
+            echo "✅ DNS 记录 $FULL_RECORD_NAME 已存在"
+          else
+            CREATE_RESPONSE=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records" \
+              -H "Authorization: Bearer $CF_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"type\":\"CNAME\",\"name\":\"$FULL_RECORD_NAME\",\"content\":\"$TARGET_DOMAIN\",\"ttl\":1,\"proxied\":true}")
+
+            if echo "$CREATE_RESPONSE" | grep -qE '"success"\s*:\s*true'; then
+              echo "✅ DNS 记录 $FULL_RECORD_NAME 创建成功"
+            else
+              echo "❌ DNS 记录创建失败: $CREATE_RESPONSE"
+            fi
+          fi
