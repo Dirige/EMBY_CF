@@ -9,6 +9,12 @@
 ![Version](https://img.shields.io/badge/version-v6.7.5--multi-41d9ff?style=flat-square)
 [![License](https://img.shields.io/badge/License-MIT-00FF9D?style=flat-square)](LICENSE)
 
+[![优选域名监控](https://img.shields.io/badge/Youxuan-yx.255432.xyz-00E5FF?style=flat-square)](https://yx.255432.xyz/)
+[![Telegram 群组](https://img.shields.io/badge/Telegram-Join-26A5E4?style=flat-square&logo=telegram&logoColor=white)](https://t.me/+7cbXthaBajszNjI1)
+
+- 优选域名监控：<https://yx.255432.xyz/>
+- Telegram 群组：<https://t.me/+7cbXthaBajszNjI1>
+
 [部署教程](DEPLOY.md) · [环境变量](#环境变量) · [API Token 权限](#api-token-权限) · [常见问题](DEPLOY.md#18-故障排查)
 
 ---
