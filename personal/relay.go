@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -10,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -18,14 +20,16 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
 
-const VERSION = "emby-relay-0.1.0"
+const VERSION = "emby-relay-0.2.0"
 
 // 全部配置持久化在 JSON 文件里，由 Worker 后台在线下发修改，不用任何环境变量。
 type Config struct {
@@ -79,6 +83,154 @@ func saveConfig(c Config) error {
 
 func currentConfig() Config { cfgMu.RLock(); defer cfgMu.RUnlock(); return cfg }
 func currentSecret() string { cfgMu.RLock(); s := cfg.Secret; cfgMu.RUnlock(); return s }
+
+// ---- 流量统计：内存计数 + 每分钟落盘（重启不丢），按上海时区日切 ----
+// up   = 从源站拉取的字节（VPS 入站）
+// down = 发回 Worker/客户端的字节（VPS 出站）
+type trafficStat struct {
+	Req  uint64 `json:"req"`
+	Up   uint64 `json:"up_bytes"`
+	Down uint64 `json:"down_bytes"`
+}
+
+type statsFile struct {
+	Date  string                 `json:"date"`
+	Total trafficStat            `json:"total"`
+	Today trafficStat            `json:"today"`
+	Hosts map[string]trafficStat `json:"hosts"`
+}
+
+var (
+	statsMu    sync.Mutex
+	statsTotal trafficStat
+	statsToday trafficStat
+	statsDate  string
+	statsHosts = map[string]trafficStat{}
+	statsPath  string
+)
+
+func shanghaiToday() string {
+	return time.Now().In(time.FixedZone("CST", 8*3600)).Format("2006-01-02")
+}
+
+func loadStats() {
+	statsPath = filepath.Join(filepath.Dir(cfgPath), "stats.json")
+	statsDate = shanghaiToday()
+	data, err := os.ReadFile(statsPath)
+	if err != nil {
+		return
+	}
+	var f statsFile
+	if json.Unmarshal(data, &f) != nil {
+		return
+	}
+	statsTotal = f.Total
+	if f.Date == statsDate {
+		statsToday = f.Today
+		statsHosts = f.Hosts
+	}
+	if statsHosts == nil {
+		statsHosts = map[string]trafficStat{}
+	}
+}
+
+func saveStats() {
+	statsMu.Lock()
+	f := statsFile{Date: statsDate, Total: statsTotal, Today: statsToday, Hosts: statsHosts}
+	statsMu.Unlock()
+	out, err := json.Marshal(f)
+	if err != nil {
+		return
+	}
+	tmp := statsPath + ".tmp"
+	if os.WriteFile(tmp, out, 0600) == nil {
+		os.Rename(tmp, statsPath)
+	}
+}
+
+func statsRollDay() {
+	today := shanghaiToday()
+	if statsDate != today {
+		statsDate = today
+		statsToday = trafficStat{}
+		statsHosts = map[string]trafficStat{}
+	}
+}
+
+func statsAdd(host string, req, up, down uint64) {
+	statsMu.Lock()
+	defer statsMu.Unlock()
+	statsRollDay()
+	statsTotal.Req += req
+	statsTotal.Up += up
+	statsTotal.Down += down
+	statsToday.Req += req
+	statsToday.Up += up
+	statsToday.Down += down
+	if host != "" {
+		h := statsHosts[host]
+		h.Req += req
+		h.Up += up
+		h.Down += down
+		statsHosts[host] = h
+	}
+}
+
+func statsSnapshot() (total, today trafficStat, hosts map[string]trafficStat, date string) {
+	statsMu.Lock()
+	defer statsMu.Unlock()
+	statsRollDay()
+	m := make(map[string]trafficStat, len(statsHosts))
+	for k, v := range statsHosts {
+		m[k] = v
+	}
+	return statsTotal, statsToday, m, statsDate
+}
+
+// countBody：包装源站响应体，边读边累计 up 字节
+type countBody struct {
+	rc   io.ReadCloser
+	host string
+}
+
+func (c *countBody) Read(p []byte) (int, error) {
+	n, err := c.rc.Read(p)
+	if n > 0 {
+		statsAdd(c.host, 0, uint64(n), 0)
+	}
+	return n, err
+}
+func (c *countBody) Close() error { return c.rc.Close() }
+
+// countWriter：包装发往 Worker/客户端的响应，累计 down 字节（兼容 Flush/Hijack）
+type countWriter struct {
+	http.ResponseWriter
+	n     uint64
+	wrote bool
+}
+
+func (c *countWriter) WriteHeader(code int) {
+	if !c.wrote {
+		c.wrote = true
+	}
+	c.ResponseWriter.WriteHeader(code)
+}
+func (c *countWriter) Write(p []byte) (int, error) {
+	if !c.wrote {
+		c.wrote = true
+	}
+	n, err := c.ResponseWriter.Write(p)
+	atomic.AddUint64(&c.n, uint64(n))
+	return n, err
+}
+func (c *countWriter) Flush() {
+	if f, ok := c.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+func (c *countWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return c.ResponseWriter.(http.Hijacker).Hijack()
+}
 
 // ---- Worker -> Relay HMAC 认证 ----
 // worker 侧: hex(HMAC-SHA256(secret, `${ms}:`${targetURL}`))
@@ -142,10 +294,10 @@ func makeTransport(verifyUpstream bool) *http.Transport {
 			InsecureSkipVerify: !verifyUpstream, // 反代目标是自签证书 Emby 时必须关校验
 			MinVersion:         tls.VersionTLS12,
 		},
-		MaxIdleConns:          64,
-		MaxIdleConnsPerHost:   32,
-		IdleConnTimeout:       60 * time.Second,
-		TLSHandshakeTimeout:   15 * time.Second,
+		MaxIdleConns:        64,
+		MaxIdleConnsPerHost: 32,
+		IdleConnTimeout:     60 * time.Second,
+		TLSHandshakeTimeout: 15 * time.Second,
 		// 只用 HTTP/1.1：与 CF/本地网络环境联动时，h2 共享连接拥抱流式请求后会把控制流饿死，
 		// 应用表现就是“请求挂 15s 被掐”。禁 h2 后每个请求独立连接，稳但稍慢。
 		ForceAttemptHTTP2:     false,
@@ -196,6 +348,10 @@ func buildProxy(target *url.URL) *httputil.ReverseProxy {
 				dur = time.Since(t0).Milliseconds()
 			}
 			log.Printf("[resp] %s %s status=%d size=%s dur=%dms", up.Request.Method, up.Request.URL.Path, up.StatusCode, up.Header.Get("Content-Length"), dur)
+			// 流量统计：包装源站响应体，边读边计 up 字节
+			if up.Body != nil {
+				up.Body = &countBody{rc: up.Body, host: up.Request.URL.Host}
+			}
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
@@ -236,7 +392,12 @@ func relayHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[relay] %s %s -> %s", r.Method, r.URL.Path, u.Host)
-	buildProxy(u).ServeHTTP(w, r)
+	statsAdd(u.Host, 1, 0, 0)
+	cw := &countWriter{ResponseWriter: w}
+	buildProxy(u).ServeHTTP(cw, r)
+	if n := atomic.LoadUint64(&cw.n); n > 0 {
+		statsAdd(u.Host, 0, 0, n)
+	}
 }
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	if !adminAuthOK(r) {
@@ -253,12 +414,44 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func statsHandler(w http.ResponseWriter, r *http.Request) {
+	if !adminAuthOK(r) {
+		http.Error(w, "unauthorized", http.StatusForbidden)
+		return
+	}
+	total, today, hosts, date := statsSnapshot()
+	type hostRow struct {
+		Host      string `json:"host"`
+		Req       uint64 `json:"req"`
+		UpBytes   uint64 `json:"up_bytes"`
+		DownBytes uint64 `json:"down_bytes"`
+	}
+	rows := make([]hostRow, 0, len(hosts))
+	for h, v := range hosts {
+		rows = append(rows, hostRow{Host: h, Req: v.Req, UpBytes: v.Up, DownBytes: v.Down})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].DownBytes+rows[i].UpBytes > rows[j].DownBytes+rows[j].UpBytes })
+	if len(rows) > 20 {
+		rows = rows[:20]
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(map[string]any{
+		"ok":       true,
+		"version":  VERSION,
+		"uptime_s": int(time.Since(startAt).Seconds()),
+		"date":     date,
+		"total":    total,
+		"today":    today,
+		"hosts":    rows,
+	})
+}
+
 type relayPush struct {
-	Secret   string `json:"secret,omitempty"`
-	CertPEM  string `json:"cert_pem,omitempty"`
-	KeyPEM   string `json:"key_pem,omitempty"`
-	Port     int    `json:"port,omitempty"`
-	Restart  bool   `json:"restart,omitempty"`
+	Secret  string `json:"secret,omitempty"`
+	CertPEM string `json:"cert_pem,omitempty"`
+	KeyPEM  string `json:"key_pem,omitempty"`
+	Port    int    `json:"port,omitempty"`
+	Restart bool   `json:"restart,omitempty"`
 }
 
 func configHandler(w http.ResponseWriter, r *http.Request) {
@@ -337,8 +530,16 @@ func main() {
 	c := currentConfig()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/_relay/health", healthHandler)
+	mux.HandleFunc("/_relay/stats", statsHandler)
 	mux.HandleFunc("/_relay/config", configHandler)
 	mux.HandleFunc("/", relayHandler)
+
+	loadStats()
+	go func() { // 每分钟落盘，重启不丢统计
+		for range time.Tick(60 * time.Second) {
+			saveStats()
+		}
+	}()
 
 	srv := &http.Server{
 		Handler:           mux,

@@ -1,4 +1,4 @@
-const CURRENT_VERSION = 'v6.3.4-image+fytrace';
+const CURRENT_VERSION = 'v6.3.5-image';
 
 // 内置优选域名
 const DEFAULT_OPTIMIZED_DOMAINS = [
@@ -1865,6 +1865,22 @@ async function handleAdminApi(request, env, url) {
     }
   }
 
+  // 拉取 VPS 中继的流量统计（relay /_relay/stats，X-Relay-Key 鉴权）
+  if (url.pathname === '/admin/api/relay/stats' && request.method === 'GET') {
+    const c = await getRelayConfig(env);
+    if (!c.relayUrl || !c.secret) return json({ ok: false, error: '未配置中继' });
+    try {
+      const res = await fetch(new Request(c.relayUrl + '/_relay/stats', { headers: { 'X-Relay-Key': c.secret }, signal: AbortSignal.timeout(8000) }));
+      const text = await res.text();
+      let body = null;
+      try { body = JSON.parse(text); } catch (_) {}
+      if (!res.ok || !body?.ok) return json({ ok: false, status: res.status, error: (body && JSON.stringify(body).slice(0, 120)) || ('HTTP ' + res.status) });
+      return json({ ok: true, ...body });
+    } catch (e) {
+      return json({ ok: false, error: String(e?.message || e).slice(0, 160) });
+    }
+  }
+
   return json({ error: 'Not found' }, 404);
 }
 
@@ -3107,6 +3123,7 @@ function buildAdminHtml() {
       <button class="btn btn-sm" onclick="testRelay(this)">测试连通</button>
       <span id="relayStatus" class="form-hint"></span>
     </div>
+    <div id="relayStats" class="form-hint" style="margin-top:14px;font-family:ui-monospace,monospace;font-size:12px;white-space:pre-wrap;cursor:pointer" title="点击刷新">📊 中继流量：加载中...</div>
   </div>
 
   <div class="card">
@@ -3865,6 +3882,37 @@ async function testRelay(btn) {
   if (btn) { btn.disabled = false; }
 }
 
+function fmtBytes(n) {
+  n = Number(n) || 0;
+  if (n >= 1073741824) return (n / 1073741824).toFixed(2) + ' GB';
+  if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+  if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
+  return n + ' B';
+}
+
+async function loadRelayStats() {
+  const el = document.getElementById('relayStats');
+  if (!el) return;
+  try {
+    const r = await fetch('/admin/api/relay/stats');
+    const d = await r.json();
+    if (!d.ok) { el.textContent = '📊 中继流量：暂不可读（' + (d.error || '未配置') + '）· 点击重试'; return; }
+    const t = d.today || {}, tot = d.total || {};
+    let s = '📊 中继流量 [' + (d.date || '') + ']  今日 ' + (t.req || 0) + ' 请求 · ↑' + fmtBytes(t.up_bytes) + ' ↓' + fmtBytes(t.down_bytes)
+      + '   累计 ' + (tot.req || 0) + ' 请求 · ↑' + fmtBytes(tot.up_bytes) + ' ↓' + fmtBytes(tot.down_bytes)
+      + '   运行 ' + Math.round((d.uptime_s || 0) / 360) / 10 + 'h（点击刷新）';
+    const hosts = d.hosts || [];
+    if (hosts.length) {
+      s += '\\n' + hosts.slice(0, 4).map(function(h) {
+        return '  · ' + h.host + '   ' + (h.req || 0) + 'req  ↑' + fmtBytes(h.up_bytes) + ' ↓' + fmtBytes(h.down_bytes);
+      }).join('\\n');
+    }
+    el.textContent = s;
+  } catch (e) { el.textContent = '📊 中继流量：读取失败 ' + e.message; }
+}
+document.getElementById('relayStats').addEventListener('click', loadRelayStats);
+setInterval(loadRelayStats, 60000);
+
 document.getElementById('routePrefix').addEventListener('input', function() {
   document.getElementById('prefixPreview').textContent = this.value.trim() || 'myemby';
 });
@@ -3873,6 +3921,7 @@ loadRoutes();
 loadQuickDNS();
 loadDomains();
 loadRelay();
+loadRelayStats();
 </script></body></html>`;
 }
 
