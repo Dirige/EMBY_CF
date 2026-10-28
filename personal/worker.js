@@ -1,4 +1,4 @@
-const CURRENT_VERSION = 'v6.3.6-image';
+const CURRENT_VERSION = 'v6.3.7-image';
 
 // 内置优选域名
 const DEFAULT_OPTIMIZED_DOMAINS = [
@@ -1531,44 +1531,6 @@ async function handleAdminApi(request, env, url) {
     return json({ success: true, ...out });
   }
 
-  // 临时调试：探测 Worker 出口直连源站的真实返回（诊断 image 模式直连失败用），用完可删
-  if (url.pathname === '/admin/api/probe-direct' && request.method === 'POST') {
-    const data = await readJson(request) || {};
-    const route = await env.DB.prepare('SELECT target FROM routes WHERE prefix = ?').bind(normalizePrefix(data.prefix)).first();
-    if (!route) return json({ error: '路由不存在' }, 404);
-    const probePath = String(data.path || '/emby/System/Info/Public');
-    const probeHeaders = { 'User-Agent': 'Mozilla/5.0 (Linux; Android 14) Emby/3.2.36', 'Accept': '*/*' };
-    if (data.token) probeHeaders['X-Emby-Token'] = String(data.token);
-    if (data.range) probeHeaders['Range'] = String(data.range);
-    if (data.xff) probeHeaders['X-Forwarded-For'] = String(data.xff);
-    const targets = splitTargets(route.target);
-    const results = await Promise.all(targets.map(async t => {
-      const probeUrl = t.replace(/\/$/, '') + probePath;
-      try {
-        const t0 = Date.now();
-        const resp = await fetch(probeUrl, { method: 'GET', headers: probeHeaders });
-        // 只读第一个 chunk，避免视频大 body 爆内存
-        let bodyHead = '';
-        try {
-          if (resp.body) {
-            const reader = resp.body.getReader();
-            const { value, done } = await reader.read();
-            if (value) bodyHead = new TextDecoder().decode(value.slice(0, 220));
-            if (!done) await reader.cancel();
-          }
-        } catch (_) {}
-        return {
-          target: t, status: resp.status, ms: Date.now() - t0,
-          'cf-ray': resp.headers.get('cf-ray') || '', 'cf-mitigated': resp.headers.get('cf-mitigated') || '',
-          server: resp.headers.get('server') || '', 'content-type': resp.headers.get('content-type') || '',
-          'content-range': resp.headers.get('content-range') || '',
-          bodyHead: bodyHead
-        };
-      } catch (e) { return { target: t, error: (e && e.message) || String(e) }; }
-    }));
-    return json({ success: true, results });
-  }
-
   if (url.pathname === '/admin/api/routes') {
     if (request.method === 'GET') {
       const today = getShanghaiParts().dateKey;
@@ -2349,20 +2311,6 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
 
   if (isPlaying || isPlaybackInfo) {
     responseHeaders.set('X-Served-By', request.cf?.colo || 'Unknown');
-  }
-  // 临时诊断：fy 前后端分离流量的真实流向（用完可删）
-  if (matchedPrefix === 'fy') {
-    if (reqCategory === 'streaming' || reqCategory === 'segment') {
-      try { await auditLog(env, 'fy.trace', `stream ${pathname.slice(0, 140)} colo=${request.cf?.colo || ''} status=${finalResponse ? finalResponse.status : 'null'}`); } catch (_) {}
-    }
-    if (isPlaybackInfo && finalResponse && finalResponse.status === 200) {
-      try {
-        const txt = await finalResponse.clone().text();
-        const dsu = [...txt.matchAll(/"DirectStreamUrl":\s*"([^"]*)"/g)].map(m => m[1]).slice(0, 5);
-        const remotePaths = [...txt.matchAll(/"(?:Path|BaseUrl|MediaSourceUrl|Url)":\s*"(https?:[^"]*(?:emby\.pro|sfcj)[^"]*)"/gi)].map(m => m[1]).slice(0, 5);
-        await auditLog(env, 'fy.trace', `PI colo=${request.cf?.colo} DSU=[${dsu.join(' | ')}] remote=[${remotePaths.join(' | ')}]`);
-      } catch (_) {}
-    }
   }
   if (relayFallbackUsed) {
     responseHeaders.set('X-Relay-Fallback', '1');
