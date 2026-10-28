@@ -1,4 +1,4 @@
-const CURRENT_VERSION = 'v6.3.5-image';
+const CURRENT_VERSION = 'v6.3.6-image';
 
 // 内置优选域名
 const DEFAULT_OPTIMIZED_DOMAINS = [
@@ -2427,7 +2427,7 @@ function latencyLabel(ms) { return ms < 0 ? 'timeout' : ms < 100 ? 'fast' : ms <
 async function speedTestDomains(domains, onProgress) {
   var done = 0;
   var rows = await runPool(domains, 3, async function(d) {
-    var ms = await measureDomain(d.domain, 4, 4000);
+    var ms = await measureDomain(d.domain, 4, 6000);
     done++;
     if (onProgress) onProgress(done, domains.length);
     return { id: d.id, domain: d.domain, name: d.name, host: d.domain, latency: ms, status: latencyLabel(ms), isBuiltin: d.isBuiltin };
@@ -2892,6 +2892,10 @@ function buildFrontendHtml() {
         <div class="stat-card"><div>今日流量</div><div class="stat-val" id="st-traffic">0 B</div><div class="stat-sub" id="st-traffic-sub"></div></div>
         <div class="stat-card"><div>今日访问</div><div class="stat-val" id="st-uv">0</div><div class="stat-sub" id="st-uv-sub"></div></div>
       </div>
+      <div class="stat-row">
+        <div class="stat-card"><div>中继今日请求</div><div class="stat-val" id="st-relay-req">—</div><div class="stat-sub" id="st-relay-req-sub">来源: VPS 中继</div></div>
+        <div class="stat-card"><div>中继今日流量</div><div class="stat-val" id="st-relay-traffic">—</div><div class="stat-sub" id="st-relay-traffic-sub">↑源站拉取 ↓发回客户端</div></div>
+      </div>
       <div id="hourly-chart"></div>
       <p class="muted" style="font-size:11px;margin-top:8px" id="st-updated"></p>
     </div>
@@ -2969,6 +2973,29 @@ async function runDomainSpeed(force) {
     st.textContent = '测速完成 · ' + clientOk + ' 个可用 · 推荐: ' + (best ? best.domain : '无');
   } else {
     st.textContent = '测速失败，请检查网络或稍后重试';
+  }
+}
+
+async function loadRelayStatsCard() {
+  const reqEl = document.getElementById('st-relay-req');
+  const txEl = document.getElementById('st-relay-traffic');
+  if (!reqEl || !txEl) return;
+  try {
+    const r = await fetch('/admin/api/relay/stats');
+    const d = await r.json();
+    if (!d.ok) {
+      reqEl.textContent = '—';
+      document.getElementById('st-relay-req-sub').textContent = '来源: VPS 中继（' + (d.error || '不可读') + '）';
+      return;
+    }
+    const t = d.today || {};
+    reqEl.textContent = t.req || 0;
+    document.getElementById('st-relay-req-sub').textContent = '来源: VPS 中继 · 上海时区 ' + (d.date || '');
+    txEl.textContent = '↑' + fmtBytes(t.up_bytes) + ' ↓' + fmtBytes(t.down_bytes);
+    document.getElementById('st-relay-traffic-sub').textContent = '↑源站拉取 ↓发回客户端 · 上海时区 ' + (d.date || '');
+  } catch (e) {
+    reqEl.textContent = '—';
+    document.getElementById('st-relay-req-sub').textContent = '来源: VPS 中继（读取失败）';
   }
 }
 
@@ -3922,6 +3949,8 @@ loadQuickDNS();
 loadDomains();
 loadRelay();
 loadRelayStats();
+loadRelayStatsCard();
+setInterval(loadRelayStatsCard, 60000);
 </script></body></html>`;
 }
 
