@@ -17,6 +17,10 @@
 
 [部署教程](DEPLOY.md) · [环境变量](#环境变量) · [API Token 权限](#api-token-权限) · [常见问题](DEPLOY.md#18-故障排查)
 
+## 个人版
+
+单用户 + VPS 中继分流版（三态分流 `off/on/image`、视频直连失败自动回退 VPS、一键部署脚本）：见 **[personal/README.md](personal/README.md)**。
+
 ---
 
 ## 功能
