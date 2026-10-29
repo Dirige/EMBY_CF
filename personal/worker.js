@@ -1,4 +1,4 @@
-const CURRENT_VERSION = 'v6.4.5';
+const CURRENT_VERSION = 'v6.4.6';
 
 // 内置优选域名
 const DEFAULT_OPTIMIZED_DOMAINS = [
@@ -440,7 +440,7 @@ const statsBuffer = new Map();
 const routeStatsBuffer = new Map();
 let statsBufferCount = 0;
 let statsLastFlush = Date.now();
-const STATS_FLUSH_EVERY = 20;
+const STATS_FLUSH_EVERY = 50;
 const STATS_FLUSH_MS = 30000;
 
 function bufferHourlyStats({ isPlay, isPlaybackInfo, bytes, timestamp, prefix }) {
@@ -494,6 +494,8 @@ async function flushHourlyStats(env) {
 
 function applySecurityHeaders(headers) {
   for (const [k, v] of Object.entries(SECURITY_HEADERS)) headers.set(k, v);
+  if (XFO_CURRENT) headers.set('X-Frame-Options', XFO_CURRENT);
+  else headers.delete('X-Frame-Options');
   return headers;
 }
 
@@ -514,6 +516,13 @@ function json(data, status = 200) {
 function html(body, status = 200) {
   const headers = { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' };
   for (const [k, v] of Object.entries(SECURITY_HEADERS)) headers[k] = v;
+  return new Response(body, { status, headers });
+}
+
+// 代理链路的错误响应统一带 CORS 头，避免 Emby 客户端把真实状态码误报成跨域错误
+function errResponse(body, status, extra) {
+  const headers = { 'Content-Type': 'text/plain; charset=utf-8', 'Access-Control-Allow-Origin': '*', 'X-Content-Type-Options': 'nosniff' };
+  if (extra) for (const [k, v] of Object.entries(extra)) headers[k] = v;
   return new Response(body, { status, headers });
 }
 
@@ -739,9 +748,18 @@ function logoutResponse() {
 }
 
 // ---- 设置（存 D1 settings 表，30 秒内存缓存）----
-const SETTING_KEYS = ['health_check', 'rate_limit_per_min', 'manual_redirect_domains', 'domain_proxy_rules', 'tg_daily_report'];
+const SETTING_KEYS = ['health_check', 'rate_limit_per_min', 'manual_redirect_domains', 'domain_proxy_rules', 'tg_daily_report', 'x_frame_options'];
 let settingsCache = { exp: 0, v: null };
 let bingWallpaper = { at: 0, url: '' };
+
+// X-Frame-Options 仅代理响应可配置（后台/首页页面始终 SAMEORIGIN）；'' = 不发送
+let XFO_CURRENT = 'SAMEORIGIN';
+function normalizeXfo(v) {
+  const s = String(v || '').trim().toLowerCase();
+  if (s === 'deny') return 'DENY';
+  if (s === 'off' || s === 'none' || s === '0') return '';
+  return 'SAMEORIGIN';
+}
 
 async function getSettings(env) {
   const now = Date.now();
@@ -762,6 +780,7 @@ async function getSettings(env) {
     manualDomains: String(raw.manual_redirect_domains || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean),
     domainProxyRules: { ...DOMAIN_PROXY_RULES, ...rules },
   };
+  XFO_CURRENT = normalizeXfo(raw.x_frame_options);
   settingsCache = { exp: now + 30000, v };
   return v;
 }
@@ -1495,7 +1514,7 @@ async function handleAdminApi(request, env, url) {
       }
     }
     if (stmts.length) await env.DB.batch(stmts);
-    clearRouteCache(); settingsCache = { exp: 0, v: null };
+    clearRouteCache(); settingsCache = { exp: 0, v: null }; invalidateRelayCache();
     await auditLog(env, 'import', `routes=${nr} domains=${nd} skipped=${skipped.length}`);
     return json({ success: true, routes: nr, domains: nd, skipped });
   }
@@ -1777,6 +1796,7 @@ async function handleAdminApi(request, env, url) {
             .bind(relayUrl, secret, certPem, keyPem, enabled, nowIso),
         ]);
         await auditLog(env, 'relay.save', relayUrl + (enabled ? ' (启用)' : ' (停用)'));
+        invalidateRelayCache();
       } catch (e) {
         return json({ error: '保存失败: ' + String(e?.message || e).slice(0, 150) }, 500);
       }
@@ -1880,14 +1900,20 @@ function relayPortFrom(relayUrl) {
   }
 }
 
+let relayConfigCache = { at: 0, v: null };
+const RELAY_CACHE_TTL = 60000;
+function invalidateRelayCache() { relayConfigCache = { at: 0, v: null }; }
+
 async function getRelayConfig(env) {
   const empty = { relayUrl: '', port: 2087, secret: '', certPem: '', keyPem: '', enabled: false, updatedAt: '' };
   if (!env.DB) return empty;
+  const now = Date.now();
+  if (relayConfigCache.v && now - relayConfigCache.at < RELAY_CACHE_TTL) return relayConfigCache.v;
   try {
     const row = await env.DB.prepare('SELECT * FROM relay_config WHERE id = 1').first();
-    if (!row) return empty;
+    if (!row) { relayConfigCache = { at: now, v: empty }; return empty; }
     const relayUrl = normalizeRelayBase(row.relay_url);
-    return {
+    const cfg = {
       relayUrl,
       port: relayUrl ? relayPortFrom(relayUrl) : 2087,
       secret: row.secret || '',
@@ -1896,8 +1922,10 @@ async function getRelayConfig(env) {
       enabled: row.enabled === 'on',
       updatedAt: row.updated_at || '',
     };
+    relayConfigCache = { at: now, v: cfg };
+    return cfg;
   } catch (_) {
-    return empty;
+    return empty;  // 读库失败不缓存，下个请求重试，避免瞬时故障导致中继误停 60s
   }
 }
 
@@ -1919,19 +1947,19 @@ async function resolveProxyTarget(request, env, url) {
   // 不对整条路径 decode：只对首段解码，其余保持原始编码，避免 %2F %23 %3F 被还原后改变上游路径
   const rawSegments = url.pathname.split('/').filter(Boolean);
   let firstSeg = rawSegments[0] || '';
-  try { firstSeg = decodeURIComponent(firstSeg); } catch { return { error: new Response('Bad Request', { status: 400 }) }; }
+  try { firstSeg = decodeURIComponent(firstSeg); } catch { return { error: errResponse('Bad Request', 400) }; }
   const prefix = normalizePrefix(firstSeg);
-  if (!prefix) return { error: new Response('Not Found', { status: 404 }) };
+  if (!prefix) return { error: errResponse('Not Found', 404) };
 
   const route = await getRoute(env, prefix);
-  if (!route) return { error: new Response('404: 节点不存在', { status: 404 }) };
-  if (route.enabled === 0) return { error: new Response('503: 该路由已停用', { status: 503 }) };
+  if (!route) return { error: errResponse('404: 节点不存在', 404) };
+  if (route.enabled === 0) return { error: errResponse('503: 该路由已停用', 503) };
 
   const clientIp = request.headers.get('cf-connecting-ip') || '';
   const allow = parseIpList(route.ip_allow);
   const block = parseIpList(route.ip_block);
-  if (block.length && ipMatches(clientIp, block)) return { error: new Response('Forbidden', { status: 403 }) };
-  if (allow.length && !ipMatches(clientIp, allow)) return { error: new Response('Forbidden', { status: 403 }) };
+  if (block.length && ipMatches(clientIp, block)) return { error: errResponse('Forbidden', 403) };
+  if (allow.length && !ipMatches(clientIp, allow)) return { error: errResponse('Forbidden', 403) };
 
   const enableCache = route.cache_img !== 'off';
   const compatMode = route.compat_mode === 'on';
@@ -1962,6 +1990,23 @@ const HOST_DOWN_MS = 30000;
 const lastPlayTouched = new Map();
 const LAST_PLAY_THROTTLE_MS = 60000;
 const API_TIMEOUT_MS = 15000;
+
+// 直连回退审计节流：同一 prefix+类型 5 分钟只记一条，防止源站故障/地区拦截期间 D1 写放大
+const fallbackLogAt = new Map();
+const FALLBACK_LOG_MS = 300000;
+function fallbackLogThrottled(key) {
+  const now = Date.now();
+  if (now - (fallbackLogAt.get(key) || 0) < FALLBACK_LOG_MS) return true;
+  fallbackLogAt.set(key, now);
+  if (fallbackLogAt.size > 500) {
+    for (const [k, v] of fallbackLogAt) {
+      if (now - v < FALLBACK_LOG_MS) continue;
+      fallbackLogAt.delete(k);
+      if (fallbackLogAt.size <= 250) break;
+    }
+  }
+  return false;
+}
 
 // 统一构造上游请求头：先清理，再设置（修复原先"先 set 后被 DROP 删除"的顺序错误）
 function buildUpstreamHeaders(request, upstreamUrl, { ipMode, compatMode, crossOrigin = false }) {
@@ -1998,18 +2043,30 @@ function progressKeyOf(request) {
   return 'progress:' + ip + ':' + device + ':' + session;
 }
 
+// 缓存键归一化：去掉 api_key / X-Emby-Token 类鉴权参数（大小写不敏感），其余参数原样保留
+const CACHE_STRIP_PARAMS = ['api_key', 'x-emby-token', 'x-emby-api-key'];
+function cacheKeyUrl(rawUrl) {
+  try {
+    const u = new URL(rawUrl);
+    for (const k of Array.from(u.searchParams.keys())) {
+      if (CACHE_STRIP_PARAMS.includes(k.toLowerCase())) u.searchParams.delete(k);
+    }
+    return u.toString();
+  } catch { return rawUrl; }
+}
+
 async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
   const { enableCache = true, compatMode = false, clientIpMode = 'forward', matchedPrefix = null, customHeaders = [], relayMode = 'off', relay = null } = opts;
   const ipMode = normalizeIpMode(clientIpMode);
   const settings = await getSettings(env);
 
-  if (!upstreamUrls.length) return new Response('404: Target empty', { status: 404 });
+  if (!upstreamUrls.length) return errResponse('404: Target empty', 404);
 
   let firstUpstreamUrl;
   try {
     firstUpstreamUrl = new URL(upstreamUrls[0]);
   } catch {
-    return new Response('Invalid upstream URL', { status: 500 });
+    return errResponse('Invalid upstream URL', 500);
   }
 
   const pathname = firstUpstreamUrl.pathname;
@@ -2024,7 +2081,7 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
 
   if (!['streaming', 'segment', 'image', 'static'].includes(reqCategory) &&
       rateLimited(request.headers.get('cf-connecting-ip') || 'unknown', settings.rateLimitPerMin)) {
-    return new Response('429: Too Many Requests', { status: 429, headers: { 'Retry-After': '30' } });
+    return errResponse('429: Too Many Requests', 429, { 'Retry-After': '30' });
   }
 
   // Progress 心跳节流：同一 IP + 设备 + 播放会话 30 秒内只放行一次，其余直接返回 204，不转发上游
@@ -2116,7 +2173,8 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
   const hasAuthHeader = SENSITIVE_REQ_HEADERS.some(h => request.headers.has(h));
   const canUseCache = enableCache && isCacheableRequest(reqCategory) && request.method === 'GET' &&
     !request.headers.has('Range') && !(reqCategory === 'image' && hasAuthHeader);
-  const cacheKey = canUseCache ? new Request(request.url, { method: 'GET' }) : null;
+  // 缓存键剥离 token 类查询参数：同一图片不同用户共享缓存（用户私有图片路径本身含用户 ID，不会串）
+  const cacheKey = canUseCache ? new Request(cacheKeyUrl(request.url), { method: 'GET' }) : null;
 
   if (canUseCache) {
     try {
@@ -2221,7 +2279,9 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
       let response = await fetch(new Request(fetchTarget, fetchInit));
       // image 模式回退：直连被源站拒绝（401/403/451，常见于 CF WAF 地区拦截）→ 自动改走 VPS 中继
       if (canRelayFallback && [401, 403, 451].includes(response.status)) {
-        try { await auditLog(env, 'direct.fallback', `${matchedPrefix || request.cf?.colo || '?'} ${request.method} ${pathname} direct_status=${response.status} colo=${request.cf?.colo || ''} body=${(await response.clone().text()).slice(0, 80)}`); } catch (_) {}
+        if (!fallbackLogThrottled((matchedPrefix || '?') + '|40x')) {
+          try { await auditLog(env, 'direct.fallback', `${matchedPrefix || request.cf?.colo || '?'} ${request.method} ${pathname} direct_status=${response.status} colo=${request.cf?.colo || ''}`); } catch (_) {}
+        }
         try {
           const rb = await tryRelayFallback(upstreamUrl);
           if (rb && ![401, 403, 451].includes(rb.status)) { response = rb; relayFallbackUsed = true; }
@@ -2241,7 +2301,9 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
       lastError = err;
       // image 模式回退：直连网络错误/超时 → 自动改走 VPS 中继重发
       if (canRelayFallback) {
-        try { await auditLog(env, 'direct.fallback.err', `${matchedPrefix || '?'} ${request.method} ${pathname} direct_err=${(err && err.message) || String(err)} colo=${request.cf?.colo || ''}`); } catch (_) {}
+        if (!fallbackLogThrottled((matchedPrefix || '?') + '|err')) {
+          try { await auditLog(env, 'direct.fallback.err', `${matchedPrefix || '?'} ${request.method} ${pathname} direct_err=${(err && err.message) || String(err)} colo=${request.cf?.colo || ''}`); } catch (_) {}
+        }
         try {
           const rb = await tryRelayFallback(upstreamUrl);
           if (rb) {
@@ -2265,16 +2327,16 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
   }
 
   if (!finalResponse) {
-    return new Response('所有线路不可用: ' + (lastError?.message || 'Unknown'), { status: 502 });
+    return errResponse('所有线路不可用: ' + (lastError?.message || 'Unknown'), 502);
   }
 
   if (!compatMode && lastUpstreamUrl) {
     const location = finalResponse.headers.get('Location');
     if (location && finalResponse.status >= 300 && finalResponse.status < 400) {
       let redirectUrl;
-      try { redirectUrl = new URL(location, lastUpstreamUrl); } catch { return new Response('Bad redirect location', { status: 502 }); }
+      try { redirectUrl = new URL(location, lastUpstreamUrl); } catch { return errResponse('Bad redirect location', 502); }
       if (redirectUrl.protocol !== 'http:' && redirectUrl.protocol !== 'https:') {
-        return new Response('Bad redirect location', { status: 502 });
+        return errResponse('Bad redirect location', 502);
       }
 
       if (MANUAL_REDIRECT_DOMAINS.concat(settings.manualDomains).some(domain => redirectUrl.hostname === domain || redirectUrl.hostname.endsWith('.' + domain))) {
@@ -2286,7 +2348,7 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
       }
 
       if (isPrivateHost(redirectUrl.hostname)) {
-        return new Response('Redirect target not allowed', { status: 502 });
+        return errResponse('Redirect target not allowed', 502);
       }
 
       // 跨域重定向时不携带 Token / Cookie / Authorization，避免泄露给第三方域名
@@ -2298,7 +2360,7 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
       try {
         finalResponse = await fetch(redirectUrl.toString(), redirectInit);
       } catch (err) {
-        return new Response('重定向目标不可用: ' + (err?.message || 'Unknown'), { status: 502 });
+        return errResponse('重定向目标不可用: ' + (err?.message || 'Unknown'), 502);
       }
       // 不 return：继续走下面统一的响应头清理 / 安全头 / CORS / 统计流程
     }
@@ -3160,6 +3222,15 @@ function buildAdminHtml() {
       <p class="form-hint">仅限制 API 类请求，不影响图片和视频流</p>
     </div>
     <div class="form-group">
+      <label>X-Frame-Options 响应头（代理内容是否允许被 iframe 嵌入）</label>
+      <select id="setXfo">
+        <option value="">SAMEORIGIN（默认，仅同源可嵌入）</option>
+        <option value="deny">DENY（完全禁止嵌入）</option>
+        <option value="off">不发送（允许任意站点 iframe 嵌入）</option>
+      </select>
+      <p class="form-hint">只影响反代出去的媒体内容；管理后台始终为 SAMEORIGIN</p>
+    </div>
+    <div class="form-group">
       <label>额外的手动重定向域名（逗号分隔）</label>
       <input id="setManual" placeholder="例如 example-cdn.com, other.net">
       <label style="margin-top:12px">域名映射规则（JSON，日本机房使用）</label>
@@ -3362,6 +3433,7 @@ async function openSettings() {
   document.getElementById('setHealth').checked = s.health_check === '1';
   document.getElementById('setDailyReport').checked = String(s.tg_daily_report ?? '1') !== '0';
   document.getElementById('setRate').value = s.rate_limit_per_min || '0';
+  document.getElementById('setXfo').value = s.x_frame_options || '';
   document.getElementById('setManual').value = s.manual_redirect_domains || '';
   document.getElementById('setRules').value = s.domain_proxy_rules || '';
   const n = d.notify || {};
@@ -3377,6 +3449,7 @@ async function saveSettings() {
     health_check: document.getElementById('setHealth').checked ? '1' : '0',
     tg_daily_report: document.getElementById('setDailyReport').checked ? '1' : '0',
     rate_limit_per_min: document.getElementById('setRate').value || '0',
+    x_frame_options: document.getElementById('setXfo').value || '',
     manual_redirect_domains: document.getElementById('setManual').value.trim(),
     domain_proxy_rules: document.getElementById('setRules').value.trim()
   });
@@ -3422,6 +3495,7 @@ var AUDIT_SETTINGS = {
   health_check: '线路健康检查',
   tg_daily_report: '每日日报',
   rate_limit_per_min: '每分钟请求限制',
+  x_frame_options: 'X-Frame-Options',
   manual_redirect_domains: '手动跳转域名',
   domain_proxy_rules: '域名代理规则'
 };
@@ -4122,26 +4196,26 @@ export default {
 
     if (looksLikeDirectUrl) {
       let path = url.pathname.substring(1);
-      if (path.startsWith('/')) return new Response('Invalid proxy format', { status: 400 });
+      if (path.startsWith('/')) return errResponse('Invalid proxy format', 400);
       path = path.replace(/^(https?)\/(?!\/)/, '$1://');
       if (!path.startsWith('http')) path = 'https://' + path;
       try {
         const upstreamUrl = new URL(path);
         if (upstreamUrl.protocol !== 'http:' && upstreamUrl.protocol !== 'https:') {
-          return new Response('Invalid URL format', { status: 400 });
+          return errResponse('Invalid URL format', 400);
         }
         if (!directProxyAllowed(env, upstreamUrl.hostname)) {
-          return new Response('Forbidden: direct proxy target not allowed', { status: 403 });
+          return errResponse('Forbidden: direct proxy target not allowed', 403);
         }
         upstreamUrl.search = url.search;
         return proxyDirectUrl(request, env, ctx, [upstreamUrl.toString()], { enableCache: true });
       } catch {
-        return new Response('Invalid URL format', { status: 400 });
+        return errResponse('Invalid URL format', 400);
       }
     }
 
     if (!env.DB) {
-      return new Response('D1 数据库未绑定，路由反代不可用。仍可使用 /https://... 格式。', { status: 500 });
+      return errResponse('D1 数据库未绑定，路由反代不可用。仍可使用 /https://... 格式。', 500);
     }
 
     const resolved = await resolveProxyTarget(request, env, url);
