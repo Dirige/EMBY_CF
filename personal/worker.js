@@ -1,4 +1,4 @@
-const CURRENT_VERSION = 'v6.4.2';
+const CURRENT_VERSION = 'v6.4.3';
 
 // 内置优选域名
 const DEFAULT_OPTIMIZED_DOMAINS = [
@@ -2600,6 +2600,11 @@ const PAGE_STYLE = `
   .tab-btn.active { background:var(--accent); color:var(--accent-ink); box-shadow:0 4px 14px var(--accent-dim); }
   .tab-badge { display:inline-block; margin-left:5px; padding:0 6px; border-radius:99px; font-size:10px; background:var(--accent-dim); color:var(--accent); }
   .tab-btn.active .tab-badge { background:rgba(255,255,255,.25); color:inherit; }
+  .admin-bg { position:fixed; inset:0; z-index:0; background:center/cover no-repeat url(/bing-wallpaper); opacity:.07; pointer-events:none; }
+  .container { position:relative; z-index:1; }
+  .route-link { font-size:12px; word-break:break-all; color:var(--accent); cursor:pointer; }
+  .route-link:hover { text-decoration:underline; }
+  .btn-copy { padding:2px 9px; font-size:11px; flex:none; }
   .relay-stats { margin-top:14px; }
   .rs-row { display:flex; flex-wrap:wrap; gap:8px; }
   .rs-tile { flex:1 1 120px; padding:8px 12px; border:1px solid var(--line); border-radius:var(--radius-s); background:var(--surface-2); }
@@ -2807,36 +2812,38 @@ applyTheme(THEME_PREF);
 `;
 
 const LANDING_CSS = `
-  body.lp2 { background:linear-gradient(120deg,#dfe5da,#f2ede3); display:flex; align-items:center; justify-content:center; min-height:100vh; padding:24px; }
+  body.lp2 { display:flex; align-items:center; justify-content:center; min-height:100vh; padding:24px; }
   .lp2-bg { position:fixed; inset:0; z-index:0; }
-  .lp2-photo { position:absolute; inset:0; background:#dfe5da center/cover no-repeat url(/bing-wallpaper); animation:lp2Zoom 36s ease-in-out infinite alternate; }
+  .lp2-photo { position:absolute; inset:0; background:#06090f center/cover no-repeat url(/bing-wallpaper); animation:lp2Zoom 36s ease-in-out infinite alternate; }
   @keyframes lp2Zoom { from { transform:scale(1); } to { transform:scale(1.07); } }
-  .lp2-veil { position:absolute; inset:0; background:linear-gradient(115deg, rgba(250,247,240,.85) 0%, rgba(250,247,240,.5) 45%, rgba(250,247,240,.28) 100%); }
-  .lp2-card { position:relative; z-index:1; display:grid; grid-template-columns:1.08fr 1fr; width:min(940px,100%); min-height:520px; border-radius:24px; overflow:hidden; box-shadow:0 30px 90px rgba(20,40,35,.35); animation:lp2Up .8s ease both; }
+  .lp2-veil { position:absolute; inset:0; background:linear-gradient(115deg, rgba(6,9,15,.9) 0%, rgba(6,9,15,.74) 50%, rgba(6,9,15,.62) 100%); }
+  .lp2-card { position:relative; z-index:1; display:grid; grid-template-columns:1.08fr 1fr; width:min(940px,100%); min-height:520px; border-radius:24px; overflow:hidden; border:1px solid var(--line-strong); box-shadow:0 30px 90px rgba(0,0,0,.5); backdrop-filter:blur(22px); -webkit-backdrop-filter:blur(22px); animation:lp2Up .8s ease both; }
   @keyframes lp2Up { from { opacity:0; transform:translateY(22px); } to { opacity:1; transform:none; } }
-  .lp2-left { position:relative; display:flex; flex-direction:column; justify-content:space-between; gap:40px; padding:40px 38px; background:linear-gradient(160deg,#17382e,#0f2a22); color:#fff; overflow:hidden; }
-  .lp2-left::after { content:''; position:absolute; right:-70px; bottom:-90px; width:280px; height:280px; border-radius:50%; background:rgba(255,255,255,.05); }
-  .lp2-brand { display:flex; align-items:center; gap:9px; font-size:12px; letter-spacing:.14em; color:rgba(255,255,255,.85); font-weight:700; }
-  .lp2-brand i { width:10px; height:10px; border-radius:3px; background:#5fd4a8; box-shadow:0 0 12px rgba(95,212,168,.8); flex:none; }
-  .lp2-brand span { font-weight:400; opacity:.55; letter-spacing:.06em; }
-  .lp2-left h1 { font-size:clamp(2.1em, 4.6vw, 3em); line-height:1.18; margin:0 0 12px; font-weight:800; letter-spacing:.02em; }
-  .lp2-head p { margin:0; color:rgba(255,255,255,.66); font-size:14px; }
+  .lp2-left { position:relative; display:flex; flex-direction:column; justify-content:space-between; gap:40px; padding:40px 38px; background:linear-gradient(165deg, var(--accent-dim), rgba(13,19,30,.42) 60%); color:var(--text); overflow:hidden; }
+  .lp2-left::before { content:''; position:absolute; left:-90px; top:-90px; width:300px; height:300px; border-radius:50%; background:radial-gradient(circle, var(--accent-dim), transparent 70%); filter:blur(10px); }
+  .lp2-left::after { content:''; position:absolute; right:-70px; bottom:-90px; width:280px; height:280px; border-radius:50%; background:rgba(255,255,255,.045); }
+  .lp2-brand { position:relative; z-index:1; display:flex; align-items:center; gap:9px; font-size:12px; letter-spacing:.14em; color:var(--text-dim); font-weight:700; }
+  .lp2-brand i { width:10px; height:10px; border-radius:3px; background:var(--accent); box-shadow:0 0 12px var(--accent-line); flex:none; }
+  .lp2-brand span { font-weight:400; opacity:.6; letter-spacing:.06em; }
+  .lp2-left h1 { position:relative; z-index:1; font-size:clamp(2.1em, 4.6vw, 3em); line-height:1.18; margin:0 0 12px; font-weight:800; letter-spacing:-.01em; }
+  .lp2-left h1 em { font-style:normal; color:var(--accent); }
+  .lp2-head p { position:relative; z-index:1; margin:0; color:var(--text-dim); font-size:14px; }
   .lp2-chips { position:relative; z-index:1; display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
-  .lp2-chips div { padding:12px; border:1px solid rgba(255,255,255,.16); background:rgba(255,255,255,.07); border-radius:12px; }
-  .lp2-chips b { display:block; font-size:15px; margin-bottom:3px; }
-  .lp2-chips span { font-size:11px; color:rgba(255,255,255,.6); }
-  .lp2-right { display:flex; flex-direction:column; padding:44px 40px; background:#faf7f1; color:#1c2b26; }
+  .lp2-chips div { padding:12px; border:1px solid var(--line); background:var(--surface-2); border-radius:12px; }
+  .lp2-chips b { display:block; font-size:15px; margin-bottom:3px; color:var(--accent); }
+  .lp2-chips span { font-size:11px; color:var(--text-dim); }
+  .lp2-right { display:flex; flex-direction:column; padding:44px 40px; background:var(--surface); color:var(--text); }
   .lp2-right h2 { margin:6px 0 6px; font-size:1.5em; font-weight:800; letter-spacing:-.01em; }
-  .lp2-sub { margin:0 0 26px; color:#7d8a83; font-size:13px; }
-  .lp2-cta { display:flex; align-items:center; justify-content:space-between; padding:15px 20px; border-radius:12px; background:#17382e; color:#fff; text-decoration:none; font-weight:700; font-size:15px; transition:filter .18s ease, transform .18s ease; box-shadow:0 10px 24px rgba(23,56,46,.35); }
-  .lp2-cta:hover { filter:brightness(1.12); transform:translateY(-2px); }
-  .lp2-cta span { font-weight:400; opacity:.8; }
+  .lp2-sub { margin:0 0 26px; color:var(--text-dim); font-size:13px; }
+  .lp2-cta { display:flex; align-items:center; justify-content:space-between; padding:15px 20px; border-radius:12px; background:var(--accent); color:var(--accent-ink); text-decoration:none; font-weight:700; font-size:15px; transition:filter .18s ease, transform .18s ease; box-shadow:0 10px 24px var(--accent-dim); }
+  .lp2-cta:hover { filter:brightness(1.1); transform:translateY(-2px); }
+  .lp2-cta span { font-weight:400; opacity:.75; }
   .lp2-links { display:flex; flex-direction:column; gap:10px; margin-top:22px; }
-  .lp2-links a { display:flex; align-items:center; gap:12px; padding:13px 16px; border:1px solid #e5dfd2; border-radius:12px; background:#fff; color:#1c2b26; text-decoration:none; font-size:14px; font-weight:600; transition:border-color .16s ease, transform .16s ease, box-shadow .16s ease; }
-  .lp2-links a:hover { border-color:#17382e; transform:translateX(3px); box-shadow:0 6px 18px rgba(23,56,46,.12); }
+  .lp2-links a { display:flex; align-items:center; gap:12px; padding:13px 16px; border:1px solid var(--line); border-radius:12px; background:var(--surface-2); color:var(--text); text-decoration:none; font-size:14px; font-weight:600; transition:border-color .16s ease, transform .16s ease, box-shadow .16s ease; }
+  .lp2-links a:hover { border-color:var(--accent-line); transform:translateX(3px); box-shadow:0 6px 18px var(--accent-dim); }
   .lp2-ico { font-size:17px; }
-  .lp2-arrow { margin-left:auto; color:#a9b3ad; font-size:13px; }
-  .lp2-foot { margin:auto 0 0; padding-top:26px; color:#a9b3ad; font-size:11px; text-align:center; }
+  .lp2-arrow { margin-left:auto; color:var(--text-faint); font-size:13px; }
+  .lp2-foot { margin:auto 0 0; padding-top:26px; color:var(--text-faint); font-size:11px; text-align:center; }
   @media (max-width: 780px) {
     .lp2-card { grid-template-columns:1fr; min-height:0; }
     .lp2-left { gap:28px; padding:32px 28px; }
@@ -2848,16 +2855,17 @@ const LANDING_CSS = `
 
 function buildFrontendHtml() {
   return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="light"><meta name="theme-color" content="#17382e">
-<title>Emby 反向代理 · 控制中心</title><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
+<meta name="color-scheme" content="dark light"><meta name="theme-color" content="#06090f">
+<title>Emby 反向代理 · 统一入口</title><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
+<script>${THEME_INIT}</script>
 <style>${PAGE_STYLE}${LANDING_CSS}</style></head><body class="lp2">
 <div class="lp2-bg" aria-hidden="true"><i class="lp2-photo"></i><i class="lp2-veil"></i></div>
 <main class="lp2-card">
   <section class="lp2-left">
     <div class="lp2-brand"><i></i>EMBY·PROXY <span>${CURRENT_VERSION}</span></div>
     <div class="lp2-head">
-      <h1>多媒体<br>控制中心</h1>
-      <p>集中管理分散的 Emby 节点</p>
+      <h1>Emby <em>边缘代理</em></h1>
+      <p>多源站统一入口 · 三态分流 · 边缘加速</p>
     </div>
     <div class="lp2-chips">
       <div><b>Route</b><span>媒体路由</span></div>
@@ -2874,10 +2882,11 @@ function buildFrontendHtml() {
       <a href="https://github.com/Dirige/EMBY_CF" target="_blank" rel="noopener"><span class="lp2-ico">🐙</span><span class="lp2-name">GitHub</span><span class="lp2-arrow">↗</span></a>
       <a href="https://yx.255432.xyz/" target="_blank" rel="noopener"><span class="lp2-ico">🛰️</span><span class="lp2-name">优选域名监测</span><span class="lp2-arrow">↗</span></a>
     </nav>
-    <p class="lp2-foot">每日壁纸来自 Bing · 恶意刷接口将封禁 IP</p>
+    <p class="lp2-foot">每日壁纸来自 Bing · 请妥善使用</p>
   </section>
 </main>
-</body></html>`;
+<script>${THEME_LOGIC}
+</script></body></html>`;
 }
 
 function buildLoginHtml() {
@@ -2925,6 +2934,7 @@ function buildAdminHtml() {
 <script>${THEME_INIT}</script>
 <style>${PAGE_STYLE}</style></head><body>
 <div id="toast"></div>
+<div class="admin-bg" aria-hidden="true"></div>
 <div class="container">
   <div class="topbar">
     <a class="brand" href="/"><i class="brand-mark"></i><span class="bname">ADMIN<span style="color:var(--accent)">·</span>CONSOLE</span></a>
@@ -3198,9 +3208,25 @@ function esc(s) {
   });
 }
 
+function copyRoute(btn) {
+  var v = btn.getAttribute('data-copy') || '';
+  var done = function() { showToast('已复制 ' + v); };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(v).then(done, function() { fallbackCopy(v); done(); });
+  } else { fallbackCopy(v); done(); }
+}
+function fallbackCopy(v) {
+  var ta = document.createElement('textarea');
+  ta.value = v;
+  ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand('copy'); } catch (e) {}
+  document.body.removeChild(ta);
+}
+
 async function logout() {
   try { await fetch('/admin/api/logout', { method: 'POST' }); } catch (e) {}
-  location.reload();
+  location.href = '/';
 }
 
 async function loadRoutes() {
@@ -3236,12 +3262,14 @@ function renderRoutes(list) {
       targetsHtml += '<div class="target-row">' + tag + ' <span class="target-url"><code>' + esc(t) + '</code></span></div>';
     });
 
+    const fullUrl = location.origin + '/' + r.prefix;
     const disabled = r.enabled === 0;
     return '<div class="route-item" style="' + (disabled ? 'opacity:.55' : '') + '" data-search="' + esc((remarkName + ' ' + r.prefix).toLowerCase()) + '">' +
       '<div class="route-header">' +
         '<div class="route-title">' +
           '<h3 class="route-name">' + esc(remarkName) + '</h3>' +
-          '<span class="route-path">/' + esc(r.prefix) + '</span>' +
+          '<span class="route-path route-link" title="点击复制">' + esc(fullUrl) + '</span>' +
+          '<button class="btn btn-sm btn-copy" onclick="copyRoute(this)" data-copy="' + esc(fullUrl) + '" title="一键复制完整链接">⧉ 复制</button>' +
         '</div>' +
       '</div>' +
       '<div class="target-list">' + targetsHtml + '</div>' +
@@ -3815,13 +3843,6 @@ async function loadRelayStats() {
       + tile('累计流量', '↑' + fmtBytes(tot.up_bytes) + ' ↓' + fmtBytes(tot.down_bytes))
       + '</div>'
       + '<div class="rs-meta">运行 ' + Math.round((d.uptime_s || 0) / 360) / 10 + 'h · 上海时区 ' + (d.date || '') + ' · 点击刷新</div>';
-    const hosts = d.hosts || [];
-    if (hosts.length) {
-      s += '<details class="rs-hosts"><summary>按源站分组（' + hosts.length + '）</summary><div>'
-        + hosts.slice(0, 6).map(function(h) {
-          return '<div class="rs-host"><span>' + esc(h.host) + '</span><span>' + (h.req || 0) + ' req · ↑' + fmtBytes(h.up_bytes) + ' ↓' + fmtBytes(h.down_bytes) + '</span></div>';
-        }).join('') + '</div></details>';
-    }
     el.innerHTML = s;
   } catch (e) { el.innerHTML = '<div class="rs-meta">📊 中继流量：读取失败 ' + esc(e.message) + '</div>'; }
 }
