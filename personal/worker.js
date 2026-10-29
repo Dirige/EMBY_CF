@@ -1,4 +1,4 @@
-const CURRENT_VERSION = 'v6.4.1';
+const CURRENT_VERSION = 'v6.4.2';
 
 // 内置优选域名
 const DEFAULT_OPTIMIZED_DOMAINS = [
@@ -741,6 +741,7 @@ function logoutResponse() {
 // ---- 设置（存 D1 settings 表，30 秒内存缓存）----
 const SETTING_KEYS = ['health_check', 'rate_limit_per_min', 'manual_redirect_domains', 'domain_proxy_rules', 'tg_daily_report'];
 let settingsCache = { exp: 0, v: null };
+let bingWallpaper = { at: 0, url: '' };
 
 async function getSettings(env) {
   const now = Date.now();
@@ -2806,91 +2807,77 @@ applyTheme(THEME_PREF);
 `;
 
 const LANDING_CSS = `
-  .lp-bg { position:fixed; inset:0; overflow:hidden; z-index:0; pointer-events:none; }
-  .lp-grid { position:absolute; inset:0; background-image:linear-gradient(var(--bg-grid) 1px, transparent 1px), linear-gradient(90deg, var(--bg-grid) 1px, transparent 1px); background-size:44px 44px; -webkit-mask-image:radial-gradient(ellipse 95% 75% at 50% 0%, #000 25%, transparent 78%); mask-image:radial-gradient(ellipse 95% 75% at 50% 0%, #000 25%, transparent 78%); }
-  .lp-orb { position:absolute; border-radius:50%; filter:blur(70px); opacity:.55; animation:lpFloat 16s ease-in-out infinite; }
-  .lp-orb1 { width:440px; height:440px; top:-150px; left:-110px; background:radial-gradient(circle, var(--accent-dim), transparent 70%); }
-  .lp-orb2 { width:380px; height:380px; top:18%; right:-130px; background:radial-gradient(circle, var(--info-dim), transparent 70%); animation-delay:-6s; }
-  .lp-orb3 { width:320px; height:320px; bottom:-90px; left:28%; background:radial-gradient(circle, var(--ok-dim), transparent 70%); animation-delay:-11s; }
-  @keyframes lpFloat { 0%,100% { transform:translate(0,0) scale(1); } 50% { transform:translate(34px,-26px) scale(1.08); } }
-  .container { position:relative; z-index:1; }
-  .lp-hero { text-align:center; padding:44px 8px 24px; animation:lpUp .7s ease both; }
-  .lp-title { font-size:clamp(2.2em, 7vw, 3.6em); font-weight:800; letter-spacing:-.02em; margin:12px 0 12px; line-height:1.1; }
-  .lp-title em { font-style:normal; background:linear-gradient(120deg, var(--accent), var(--info)); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; filter:drop-shadow(0 0 20px var(--accent-dim)); }
-  .lp-sub { color:var(--text-dim); font-size:14px; margin:0 0 4px; }
-  .lp-status { display:inline-flex; align-items:center; gap:8px; margin-top:18px; padding:6px 15px; border:1px solid var(--accent-line); border-radius:99px; background:var(--accent-dim); color:var(--accent); font-size:12px; letter-spacing:.1em; }
-  .lp-dot { width:8px; height:8px; border-radius:50%; background:var(--ok); animation:lpPulse 2.2s infinite; }
-  @keyframes lpPulse { 0% { box-shadow:0 0 0 0 rgba(61,220,151,.55); } 70% { box-shadow:0 0 0 10px transparent; } 100% { box-shadow:0 0 0 0 transparent; } }
-  .lp-term-card { max-width:660px; margin:0 auto; animation:lpUp .7s .1s ease both; }
-  .lp-links { display:grid; grid-template-columns:1fr 1fr; gap:12px; max-width:660px; margin:18px auto 0; animation:lpUp .7s .2s ease both; }
-  .lp-card { display:flex; flex-direction:row; align-items:center; gap:14px; padding:16px 18px; border:1px solid var(--line); border-radius:var(--radius); background:var(--surface); text-decoration:none; color:var(--text); transition:transform .18s ease, border-color .18s ease, box-shadow .18s ease; }
-  .lp-card .lp-ico { font-size:24px; flex:none; }
-  .lp-card .lp-txt { display:flex; flex-direction:column; gap:2px; min-width:0; }
-  .lp-card .lp-name { font-weight:700; }
-  .lp-card .lp-desc { font-size:12px; color:var(--text-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .lp-card:hover { transform:translateY(-3px); border-color:var(--accent-line); box-shadow:0 10px 30px var(--accent-dim); }
-  .lp-card .ext { font-style:normal; font-size:10px; opacity:.7; }
-  .lp-card.lp-primary { border-color:var(--accent-line); background:linear-gradient(160deg, var(--accent-dim), var(--surface)); }
-  .lp-card.lp-primary .lp-name { color:var(--accent); }
-  .lp-foot { text-align:center; color:var(--text-faint); font-size:12px; margin:28px 0 12px; animation:lpUp .7s .3s ease both; }
-  @keyframes lpUp { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:none; } }
-  @media (prefers-reduced-motion: reduce) { .lp-orb, .lp-dot { animation:none; } .lp-hero, .lp-term-card, .lp-links, .lp-foot { animation:none; } }
+  body.lp2 { background:linear-gradient(120deg,#dfe5da,#f2ede3); display:flex; align-items:center; justify-content:center; min-height:100vh; padding:24px; }
+  .lp2-bg { position:fixed; inset:0; z-index:0; }
+  .lp2-photo { position:absolute; inset:0; background:#dfe5da center/cover no-repeat url(/bing-wallpaper); animation:lp2Zoom 36s ease-in-out infinite alternate; }
+  @keyframes lp2Zoom { from { transform:scale(1); } to { transform:scale(1.07); } }
+  .lp2-veil { position:absolute; inset:0; background:linear-gradient(115deg, rgba(250,247,240,.85) 0%, rgba(250,247,240,.5) 45%, rgba(250,247,240,.28) 100%); }
+  .lp2-card { position:relative; z-index:1; display:grid; grid-template-columns:1.08fr 1fr; width:min(940px,100%); min-height:520px; border-radius:24px; overflow:hidden; box-shadow:0 30px 90px rgba(20,40,35,.35); animation:lp2Up .8s ease both; }
+  @keyframes lp2Up { from { opacity:0; transform:translateY(22px); } to { opacity:1; transform:none; } }
+  .lp2-left { position:relative; display:flex; flex-direction:column; justify-content:space-between; gap:40px; padding:40px 38px; background:linear-gradient(160deg,#17382e,#0f2a22); color:#fff; overflow:hidden; }
+  .lp2-left::after { content:''; position:absolute; right:-70px; bottom:-90px; width:280px; height:280px; border-radius:50%; background:rgba(255,255,255,.05); }
+  .lp2-brand { display:flex; align-items:center; gap:9px; font-size:12px; letter-spacing:.14em; color:rgba(255,255,255,.85); font-weight:700; }
+  .lp2-brand i { width:10px; height:10px; border-radius:3px; background:#5fd4a8; box-shadow:0 0 12px rgba(95,212,168,.8); flex:none; }
+  .lp2-brand span { font-weight:400; opacity:.55; letter-spacing:.06em; }
+  .lp2-left h1 { font-size:clamp(2.1em, 4.6vw, 3em); line-height:1.18; margin:0 0 12px; font-weight:800; letter-spacing:.02em; }
+  .lp2-head p { margin:0; color:rgba(255,255,255,.66); font-size:14px; }
+  .lp2-chips { position:relative; z-index:1; display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+  .lp2-chips div { padding:12px; border:1px solid rgba(255,255,255,.16); background:rgba(255,255,255,.07); border-radius:12px; }
+  .lp2-chips b { display:block; font-size:15px; margin-bottom:3px; }
+  .lp2-chips span { font-size:11px; color:rgba(255,255,255,.6); }
+  .lp2-right { display:flex; flex-direction:column; padding:44px 40px; background:#faf7f1; color:#1c2b26; }
+  .lp2-right h2 { margin:6px 0 6px; font-size:1.5em; font-weight:800; letter-spacing:-.01em; }
+  .lp2-sub { margin:0 0 26px; color:#7d8a83; font-size:13px; }
+  .lp2-cta { display:flex; align-items:center; justify-content:space-between; padding:15px 20px; border-radius:12px; background:#17382e; color:#fff; text-decoration:none; font-weight:700; font-size:15px; transition:filter .18s ease, transform .18s ease; box-shadow:0 10px 24px rgba(23,56,46,.35); }
+  .lp2-cta:hover { filter:brightness(1.12); transform:translateY(-2px); }
+  .lp2-cta span { font-weight:400; opacity:.8; }
+  .lp2-links { display:flex; flex-direction:column; gap:10px; margin-top:22px; }
+  .lp2-links a { display:flex; align-items:center; gap:12px; padding:13px 16px; border:1px solid #e5dfd2; border-radius:12px; background:#fff; color:#1c2b26; text-decoration:none; font-size:14px; font-weight:600; transition:border-color .16s ease, transform .16s ease, box-shadow .16s ease; }
+  .lp2-links a:hover { border-color:#17382e; transform:translateX(3px); box-shadow:0 6px 18px rgba(23,56,46,.12); }
+  .lp2-ico { font-size:17px; }
+  .lp2-arrow { margin-left:auto; color:#a9b3ad; font-size:13px; }
+  .lp2-foot { margin:auto 0 0; padding-top:26px; color:#a9b3ad; font-size:11px; text-align:center; }
+  @media (max-width: 780px) {
+    .lp2-card { grid-template-columns:1fr; min-height:0; }
+    .lp2-left { gap:28px; padding:32px 28px; }
+    .lp2-right { padding:30px 28px 26px; }
+    .lp2-foot { padding-top:20px; }
+  }
+  @media (prefers-reduced-motion: reduce) { .lp2-photo, .lp2-card { animation:none; } }
 `;
 
 function buildFrontendHtml() {
   return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="dark light"><meta name="theme-color" content="#06090f">
-<title>Emby 反向代理</title><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
-<script>${THEME_INIT}</script>
-<style>${PAGE_STYLE}${LANDING_CSS}</style></head><body>
-<div class="container">
-  <div class="topbar">
-    <a class="brand" href="/"><i class="brand-mark"></i><span class="bname">EMBY<span style="color:var(--accent)">·</span>PROXY</span><span class="brand-ver">${CURRENT_VERSION}</span></a>
-    <div class="topbar-actions">
-      <button class="topbar-btn topbar-theme" id="themeToggle" onclick="cycleTheme()">AUTO</button>
-      <a href="/admin" class="topbar-btn is-accent">管理后台</a>
+<meta name="color-scheme" content="light"><meta name="theme-color" content="#17382e">
+<title>Emby 反向代理 · 控制中心</title><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
+<style>${PAGE_STYLE}${LANDING_CSS}</style></head><body class="lp2">
+<div class="lp2-bg" aria-hidden="true"><i class="lp2-photo"></i><i class="lp2-veil"></i></div>
+<main class="lp2-card">
+  <section class="lp2-left">
+    <div class="lp2-brand"><i></i>EMBY·PROXY <span>${CURRENT_VERSION}</span></div>
+    <div class="lp2-head">
+      <h1>多媒体<br>控制中心</h1>
+      <p>集中管理分散的 Emby 节点</p>
     </div>
-  </div>
-
-  <div class="lp-bg" aria-hidden="true"><i class="lp-orb lp-orb1"></i><i class="lp-orb lp-orb2"></i><i class="lp-orb lp-orb3"></i><i class="lp-grid"></i></div>
-
-  <div class="lp-hero">
-    <div class="hero-kicker">REVERSE&nbsp;PROXY&nbsp;·&nbsp;EDGE&nbsp;NETWORK</div>
-    <h1 class="lp-title">Emby <em>反向代理</em></h1>
-    <p class="lp-sub">边缘节点智能加速 · 别名快捷入口 · 三态分流 · VPS 中继</p>
-    <div class="lp-status"><i class="lp-dot"></i>EDGE&nbsp;ONLINE&nbsp;·&nbsp;${CURRENT_VERSION}</div>
-  </div>
-
-  <div class="card lp-term-card">
-    <div class="term">
-      <div class="term-bar"><i></i><i></i><i></i><span>~/emby-proxy — usage</span></div>
-      <div class="term-body">
-        <div><span class="p">$</span>https://<span class="hl">你的域名</span>/别名</div>
-        <div><span class="p">$</span>https://<span class="hl">你的域名</span>/https://emby.example.com:8096</div>
-        <div class="dim"># 添加服务后请务必手动测试 · 恶意刷接口将封禁 IP</div>
-      </div>
+    <div class="lp2-chips">
+      <div><b>Route</b><span>媒体路由</span></div>
+      <div><b>Relay</b><span>中继分流</span></div>
+      <div><b>Signal</b><span>播放统计</span></div>
     </div>
-  </div>
-
-  <div class="lp-links">
-    <a class="lp-card lp-primary" href="/admin">
-      <span class="lp-ico">🎛️</span><span class="lp-txt"><span class="lp-name">管理后台</span><span class="lp-desc">路由 · 中继 · 统计 · 日志</span></span>
-    </a>
-    <a class="lp-card" href="https://t.me/+7cbXthaBajszNjI1" target="_blank" rel="noopener">
-      <span class="lp-ico">💬</span><span class="lp-txt"><span class="lp-name">TG 群组</span><span class="lp-desc">交流与公告 <i class="ext">↗</i></span></span>
-    </a>
-    <a class="lp-card" href="https://github.com/Dirige/EMBY_CF" target="_blank" rel="noopener">
-      <span class="lp-ico">🐙</span><span class="lp-txt"><span class="lp-name">GitHub</span><span class="lp-desc">源码与文档 <i class="ext">↗</i></span></span>
-    </a>
-    <a class="lp-card" href="https://yx.255432.xyz/" target="_blank" rel="noopener">
-      <span class="lp-ico">🛰️</span><span class="lp-txt"><span class="lp-name">优选域名</span><span class="lp-desc">线路监测 <i class="ext">↗</i></span></span>
-    </a>
-  </div>
-
-  <p class="lp-foot">EMBY·PROXY · Cloudflare Workers · 请妥善使用</p>
-</div>
-<script>${THEME_LOGIC}
-</script></body></html>`;
+  </section>
+  <section class="lp2-right">
+    <h2>快捷入口</h2>
+    <p class="lp2-sub">节点管理 · 优选线路 · 使用统计</p>
+    <a class="lp2-cta" href="/admin">进入管理后台 <span>→</span></a>
+    <nav class="lp2-links">
+      <a href="https://t.me/+7cbXthaBajszNjI1" target="_blank" rel="noopener"><span class="lp2-ico">💬</span><span class="lp2-name">TG 群组</span><span class="lp2-arrow">↗</span></a>
+      <a href="https://github.com/Dirige/EMBY_CF" target="_blank" rel="noopener"><span class="lp2-ico">🐙</span><span class="lp2-name">GitHub</span><span class="lp2-arrow">↗</span></a>
+      <a href="https://yx.255432.xyz/" target="_blank" rel="noopener"><span class="lp2-ico">🛰️</span><span class="lp2-name">优选域名监测</span><span class="lp2-arrow">↗</span></a>
+    </nav>
+    <p class="lp2-foot">每日壁纸来自 Bing · 恶意刷接口将封禁 IP</p>
+  </section>
+</main>
+</body></html>`;
 }
 
 function buildLoginHtml() {
@@ -4030,6 +4017,24 @@ export default {
     }
 
     if (env.DB) { try { await initDatabase(env); } catch (_) {} }
+
+    // 必应每日壁纸：服务端取当日图 URL，图片经边缘缓存代理（国内不直连 bing）
+    if (url.pathname === '/bing-wallpaper') {
+      const now = Date.now();
+      if (!bingWallpaper.url || now - bingWallpaper.at > 3600e3) {
+        try {
+          const meta = await fetch('https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1', { cf: { cacheTtl: 3600, cacheEverything: true } });
+          const j = await meta.json();
+          const u = j && j.images && j.images[0] && j.images[0].url;
+          if (u) bingWallpaper = { at: now, url: u.startsWith('http') ? u : 'https://www.bing.com' + u };
+        } catch (e) {}
+      }
+      if (!bingWallpaper.url) return new Response('wallpaper unavailable', { status: 503 });
+      const img = await fetch(bingWallpaper.url, { cf: { cacheEverything: true, cacheTtl: 21600 } });
+      const res = new Response(img.body, img);
+      res.headers.set('Cache-Control', 'public, max-age=21600');
+      return res;
+    }
 
     if (url.pathname === '/') return html(buildFrontendHtml());
     if (url.pathname === '/favicon.ico') return new Response('', { headers: { 'Content-Type': 'image/x-icon' } });
