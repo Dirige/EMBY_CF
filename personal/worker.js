@@ -1,4 +1,4 @@
-const CURRENT_VERSION = 'v6.4.0';
+const CURRENT_VERSION = 'v6.4.1';
 
 // 内置优选域名
 const DEFAULT_OPTIMIZED_DOMAINS = [
@@ -2599,6 +2599,21 @@ const PAGE_STYLE = `
   .tab-btn.active { background:var(--accent); color:var(--accent-ink); box-shadow:0 4px 14px var(--accent-dim); }
   .tab-badge { display:inline-block; margin-left:5px; padding:0 6px; border-radius:99px; font-size:10px; background:var(--accent-dim); color:var(--accent); }
   .tab-btn.active .tab-badge { background:rgba(255,255,255,.25); color:inherit; }
+  .relay-stats { margin-top:14px; }
+  .rs-row { display:flex; flex-wrap:wrap; gap:8px; }
+  .rs-tile { flex:1 1 120px; padding:8px 12px; border:1px solid var(--line); border-radius:var(--radius-s); background:var(--surface-2); }
+  .rs-tile span { display:block; font-size:11px; color:var(--text-dim); margin-bottom:2px; }
+  .rs-tile b { font-family:ui-monospace,monospace; font-size:14px; }
+  .rs-meta { margin-top:8px; font-size:11px; color:var(--text-faint); cursor:pointer; }
+  .rs-hosts { margin-top:8px; font-size:12px; }
+  .rs-hosts summary { cursor:pointer; color:var(--text-dim); outline:none; }
+  .rs-hosts summary:hover { color:var(--text); }
+  .rs-host { display:flex; justify-content:space-between; gap:10px; padding:5px 0; border-bottom:1px dashed var(--line); font-family:ui-monospace,monospace; font-size:12px; }
+  .rs-host:last-child { border-bottom:0; }
+  details.adv-box { border:1px solid var(--line); border-radius:var(--radius-s); padding:10px 14px; margin-top:4px; background:var(--surface-2); }
+  details.adv-box summary { cursor:pointer; font-weight:600; font-size:13px; color:var(--text-dim); outline:none; }
+  details.adv-box summary:hover { color:var(--text); }
+  details.adv-box[open] summary { margin-bottom:10px; color:var(--text); }
   .tag-fast { background: var(--ok-dim); color: var(--ok); }
   .tag-good { background: var(--info-dim); color: var(--info); }
   .tag-slow { background: var(--warn-dim); color: var(--warn); }
@@ -2799,20 +2814,21 @@ const LANDING_CSS = `
   .lp-orb3 { width:320px; height:320px; bottom:-90px; left:28%; background:radial-gradient(circle, var(--ok-dim), transparent 70%); animation-delay:-11s; }
   @keyframes lpFloat { 0%,100% { transform:translate(0,0) scale(1); } 50% { transform:translate(34px,-26px) scale(1.08); } }
   .container { position:relative; z-index:1; }
-  .lp-hero { text-align:center; padding:58px 8px 26px; animation:lpUp .7s ease both; }
+  .lp-hero { text-align:center; padding:44px 8px 24px; animation:lpUp .7s ease both; }
   .lp-title { font-size:clamp(2.2em, 7vw, 3.6em); font-weight:800; letter-spacing:-.02em; margin:12px 0 12px; line-height:1.1; }
   .lp-title em { font-style:normal; background:linear-gradient(120deg, var(--accent), var(--info)); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; filter:drop-shadow(0 0 20px var(--accent-dim)); }
   .lp-sub { color:var(--text-dim); font-size:14px; margin:0 0 4px; }
   .lp-status { display:inline-flex; align-items:center; gap:8px; margin-top:18px; padding:6px 15px; border:1px solid var(--accent-line); border-radius:99px; background:var(--accent-dim); color:var(--accent); font-size:12px; letter-spacing:.1em; }
   .lp-dot { width:8px; height:8px; border-radius:50%; background:var(--ok); animation:lpPulse 2.2s infinite; }
   @keyframes lpPulse { 0% { box-shadow:0 0 0 0 rgba(61,220,151,.55); } 70% { box-shadow:0 0 0 10px transparent; } 100% { box-shadow:0 0 0 0 transparent; } }
-  .lp-term-card { max-width:620px; margin:0 auto; animation:lpUp .7s .1s ease both; }
-  .lp-links { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:12px; margin-top:18px; animation:lpUp .7s .2s ease both; }
-  .lp-card { display:flex; flex-direction:column; gap:5px; padding:18px 16px; border:1px solid var(--line); border-radius:var(--radius); background:var(--surface); text-decoration:none; color:var(--text); transition:transform .18s ease, border-color .18s ease, box-shadow .18s ease; }
-  .lp-card:hover { transform:translateY(-3px); border-color:var(--accent-line); box-shadow:0 10px 30px var(--accent-dim); }
-  .lp-card .lp-ico { font-size:22px; }
+  .lp-term-card { max-width:660px; margin:0 auto; animation:lpUp .7s .1s ease both; }
+  .lp-links { display:grid; grid-template-columns:1fr 1fr; gap:12px; max-width:660px; margin:18px auto 0; animation:lpUp .7s .2s ease both; }
+  .lp-card { display:flex; flex-direction:row; align-items:center; gap:14px; padding:16px 18px; border:1px solid var(--line); border-radius:var(--radius); background:var(--surface); text-decoration:none; color:var(--text); transition:transform .18s ease, border-color .18s ease, box-shadow .18s ease; }
+  .lp-card .lp-ico { font-size:24px; flex:none; }
+  .lp-card .lp-txt { display:flex; flex-direction:column; gap:2px; min-width:0; }
   .lp-card .lp-name { font-weight:700; }
-  .lp-card .lp-desc { font-size:12px; color:var(--text-dim); }
+  .lp-card .lp-desc { font-size:12px; color:var(--text-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .lp-card:hover { transform:translateY(-3px); border-color:var(--accent-line); box-shadow:0 10px 30px var(--accent-dim); }
   .lp-card .ext { font-style:normal; font-size:10px; opacity:.7; }
   .lp-card.lp-primary { border-color:var(--accent-line); background:linear-gradient(160deg, var(--accent-dim), var(--surface)); }
   .lp-card.lp-primary .lp-name { color:var(--accent); }
@@ -2858,16 +2874,16 @@ function buildFrontendHtml() {
 
   <div class="lp-links">
     <a class="lp-card lp-primary" href="/admin">
-      <span class="lp-ico">🎛️</span><span class="lp-name">管理后台</span><span class="lp-desc">路由 · 中继 · 统计 · 日志</span>
+      <span class="lp-ico">🎛️</span><span class="lp-txt"><span class="lp-name">管理后台</span><span class="lp-desc">路由 · 中继 · 统计 · 日志</span></span>
     </a>
     <a class="lp-card" href="https://t.me/+7cbXthaBajszNjI1" target="_blank" rel="noopener">
-      <span class="lp-ico">💬</span><span class="lp-name">TG 群组</span><span class="lp-desc">交流与公告 <i class="ext">↗</i></span>
+      <span class="lp-ico">💬</span><span class="lp-txt"><span class="lp-name">TG 群组</span><span class="lp-desc">交流与公告 <i class="ext">↗</i></span></span>
     </a>
     <a class="lp-card" href="https://github.com/Dirige/EMBY_CF" target="_blank" rel="noopener">
-      <span class="lp-ico">🐙</span><span class="lp-name">GitHub</span><span class="lp-desc">源码与文档 <i class="ext">↗</i></span>
+      <span class="lp-ico">🐙</span><span class="lp-txt"><span class="lp-name">GitHub</span><span class="lp-desc">源码与文档 <i class="ext">↗</i></span></span>
     </a>
     <a class="lp-card" href="https://yx.255432.xyz/" target="_blank" rel="noopener">
-      <span class="lp-ico">🛰️</span><span class="lp-name">优选域名</span><span class="lp-desc">线路监测 <i class="ext">↗</i></span>
+      <span class="lp-ico">🛰️</span><span class="lp-txt"><span class="lp-name">优选域名</span><span class="lp-desc">线路监测 <i class="ext">↗</i></span></span>
     </a>
   </div>
 
@@ -3008,19 +3024,20 @@ function buildAdminHtml() {
         <input type="checkbox" id="relayEnabled"> 启用中继（总开关，勾选后带「走 VPS 反代」标记的路由才会真正走中继）
       </label>
     </div>
-    <div class="form-group">
-      <label>TLS 证书 (PEM，可选)</label>
+    <details class="adv-box">
+      <summary>🔐 TLS 证书（可选 · 高级）</summary>
+      <label style="margin-top:12px">TLS 证书 (PEM，可选)</label>
       <textarea id="relayCert" rows="4" spellcheck="false" style="font-family:ui-monospace,monospace;font-size:12px" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"></textarea>
       <label style="margin-top:12px">私钥 (PEM，可选)</label>
       <textarea id="relayKey" rows="4" spellcheck="false" style="font-family:ui-monospace,monospace;font-size:12px" placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"></textarea>
-      <p class="form-hint">留空则只推送密钥不动证书；两项都填则推送证书并自动重启 VPS 证书服务</p>
-    </div>
+      <p class="form-hint">留空则只推送密钥不动证书；两项都填则推送证书并自动重启 VPS 证书服务。想让 Worker→VPS 这段加密，推荐在 VPS 上用 Let's Encrypt 自动签（需要时我可以给一键脚本），CF 小云朵解决不了这段的加密</p>
+    </details>
     <div class="toolbar">
       <button class="btn btn-sm btn-solid" onclick="saveRelay(this)">保存并下发到 VPS</button>
       <button class="btn btn-sm" onclick="testRelay(this)">测试连通</button>
       <span id="relayStatus" class="form-hint"></span>
     </div>
-    <div id="relayStats" class="form-hint" style="margin-top:14px;font-family:ui-monospace,monospace;font-size:12px;white-space:pre-wrap;cursor:pointer" title="点击刷新">📊 中继流量：加载中...</div>
+    <div id="relayStats" class="relay-stats" title="点击刷新">📊 中继流量：加载中...</div>
   </div>
 
   </div>
@@ -3801,19 +3818,25 @@ async function loadRelayStats() {
   try {
     const r = await fetch('/admin/api/relay/stats');
     const d = await r.json();
-    if (!d.ok) { el.textContent = '📊 中继流量：暂不可读（' + (d.error || '未配置') + '）· 点击重试'; return; }
+    if (!d.ok) { el.innerHTML = '<div class="rs-meta">📊 中继流量：暂不可读（' + esc(d.error || '未配置') + '）· 点击重试</div>'; return; }
     const t = d.today || {}, tot = d.total || {};
-    let s = '📊 中继流量 [' + (d.date || '') + ']  今日 ' + (t.req || 0) + ' 请求 · ↑' + fmtBytes(t.up_bytes) + ' ↓' + fmtBytes(t.down_bytes)
-      + '   累计 ' + (tot.req || 0) + ' 请求 · ↑' + fmtBytes(tot.up_bytes) + ' ↓' + fmtBytes(tot.down_bytes)
-      + '   运行 ' + Math.round((d.uptime_s || 0) / 360) / 10 + 'h（点击刷新）';
+    const tile = function(label, val) { return '<div class="rs-tile"><span>' + label + '</span><b>' + val + '</b></div>'; };
+    let s = '<div class="rs-row">'
+      + tile('今日请求', t.req || 0)
+      + tile('今日流量', '↑' + fmtBytes(t.up_bytes) + ' ↓' + fmtBytes(t.down_bytes))
+      + tile('累计请求', tot.req || 0)
+      + tile('累计流量', '↑' + fmtBytes(tot.up_bytes) + ' ↓' + fmtBytes(tot.down_bytes))
+      + '</div>'
+      + '<div class="rs-meta">运行 ' + Math.round((d.uptime_s || 0) / 360) / 10 + 'h · 上海时区 ' + (d.date || '') + ' · 点击刷新</div>';
     const hosts = d.hosts || [];
     if (hosts.length) {
-      s += '\\n' + hosts.slice(0, 4).map(function(h) {
-        return '  · ' + h.host + '   ' + (h.req || 0) + 'req  ↑' + fmtBytes(h.up_bytes) + ' ↓' + fmtBytes(h.down_bytes);
-      }).join('\\n');
+      s += '<details class="rs-hosts"><summary>按源站分组（' + hosts.length + '）</summary><div>'
+        + hosts.slice(0, 6).map(function(h) {
+          return '<div class="rs-host"><span>' + esc(h.host) + '</span><span>' + (h.req || 0) + ' req · ↑' + fmtBytes(h.up_bytes) + ' ↓' + fmtBytes(h.down_bytes) + '</span></div>';
+        }).join('') + '</div></details>';
     }
-    el.textContent = s;
-  } catch (e) { el.textContent = '📊 中继流量：读取失败 ' + e.message; }
+    el.innerHTML = s;
+  } catch (e) { el.innerHTML = '<div class="rs-meta">📊 中继流量：读取失败 ' + esc(e.message) + '</div>'; }
 }
 document.getElementById('relayStats').addEventListener('click', loadRelayStats);
 setInterval(loadRelayStats, 60000);
