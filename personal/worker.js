@@ -1,4 +1,4 @@
-const CURRENT_VERSION = 'v6.3.7-image';
+const CURRENT_VERSION = 'v6.4.0';
 
 // 内置优选域名
 const DEFAULT_OPTIMIZED_DOMAINS = [
@@ -2593,6 +2593,12 @@ const PAGE_STYLE = `
   #auditList th:nth-child(2) { white-space: nowrap; }
 
   .tag { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: 5px; font-size: 11px; font-weight: 600; }
+  .tabbar { display:flex; gap:4px; margin:0 0 16px; padding:5px; background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); position:sticky; top:10px; z-index:60; backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px); box-shadow:var(--shadow); }
+  .tab-btn { flex:1; padding:9px 6px; border:0; border-radius:var(--radius-s); background:transparent; color:var(--text-dim); font-size:13px; font-weight:600; cursor:pointer; transition:background .16s ease, color .16s ease; white-space:nowrap; }
+  .tab-btn:hover { color:var(--text); background:var(--surface-2); }
+  .tab-btn.active { background:var(--accent); color:var(--accent-ink); box-shadow:0 4px 14px var(--accent-dim); }
+  .tab-badge { display:inline-block; margin-left:5px; padding:0 6px; border-radius:99px; font-size:10px; background:var(--accent-dim); color:var(--accent); }
+  .tab-btn.active .tab-badge { background:rgba(255,255,255,.25); color:inherit; }
   .tag-fast { background: var(--ok-dim); color: var(--ok); }
   .tag-good { background: var(--info-dim); color: var(--info); }
   .tag-slow { background: var(--warn-dim); color: var(--warn); }
@@ -2784,28 +2790,62 @@ if(window.matchMedia){
 applyTheme(THEME_PREF);
 `;
 
+const LANDING_CSS = `
+  .lp-bg { position:fixed; inset:0; overflow:hidden; z-index:0; pointer-events:none; }
+  .lp-grid { position:absolute; inset:0; background-image:linear-gradient(var(--bg-grid) 1px, transparent 1px), linear-gradient(90deg, var(--bg-grid) 1px, transparent 1px); background-size:44px 44px; -webkit-mask-image:radial-gradient(ellipse 95% 75% at 50% 0%, #000 25%, transparent 78%); mask-image:radial-gradient(ellipse 95% 75% at 50% 0%, #000 25%, transparent 78%); }
+  .lp-orb { position:absolute; border-radius:50%; filter:blur(70px); opacity:.55; animation:lpFloat 16s ease-in-out infinite; }
+  .lp-orb1 { width:440px; height:440px; top:-150px; left:-110px; background:radial-gradient(circle, var(--accent-dim), transparent 70%); }
+  .lp-orb2 { width:380px; height:380px; top:18%; right:-130px; background:radial-gradient(circle, var(--info-dim), transparent 70%); animation-delay:-6s; }
+  .lp-orb3 { width:320px; height:320px; bottom:-90px; left:28%; background:radial-gradient(circle, var(--ok-dim), transparent 70%); animation-delay:-11s; }
+  @keyframes lpFloat { 0%,100% { transform:translate(0,0) scale(1); } 50% { transform:translate(34px,-26px) scale(1.08); } }
+  .container { position:relative; z-index:1; }
+  .lp-hero { text-align:center; padding:58px 8px 26px; animation:lpUp .7s ease both; }
+  .lp-title { font-size:clamp(2.2em, 7vw, 3.6em); font-weight:800; letter-spacing:-.02em; margin:12px 0 12px; line-height:1.1; }
+  .lp-title em { font-style:normal; background:linear-gradient(120deg, var(--accent), var(--info)); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; filter:drop-shadow(0 0 20px var(--accent-dim)); }
+  .lp-sub { color:var(--text-dim); font-size:14px; margin:0 0 4px; }
+  .lp-status { display:inline-flex; align-items:center; gap:8px; margin-top:18px; padding:6px 15px; border:1px solid var(--accent-line); border-radius:99px; background:var(--accent-dim); color:var(--accent); font-size:12px; letter-spacing:.1em; }
+  .lp-dot { width:8px; height:8px; border-radius:50%; background:var(--ok); animation:lpPulse 2.2s infinite; }
+  @keyframes lpPulse { 0% { box-shadow:0 0 0 0 rgba(61,220,151,.55); } 70% { box-shadow:0 0 0 10px transparent; } 100% { box-shadow:0 0 0 0 transparent; } }
+  .lp-term-card { max-width:620px; margin:0 auto; animation:lpUp .7s .1s ease both; }
+  .lp-links { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:12px; margin-top:18px; animation:lpUp .7s .2s ease both; }
+  .lp-card { display:flex; flex-direction:column; gap:5px; padding:18px 16px; border:1px solid var(--line); border-radius:var(--radius); background:var(--surface); text-decoration:none; color:var(--text); transition:transform .18s ease, border-color .18s ease, box-shadow .18s ease; }
+  .lp-card:hover { transform:translateY(-3px); border-color:var(--accent-line); box-shadow:0 10px 30px var(--accent-dim); }
+  .lp-card .lp-ico { font-size:22px; }
+  .lp-card .lp-name { font-weight:700; }
+  .lp-card .lp-desc { font-size:12px; color:var(--text-dim); }
+  .lp-card .ext { font-style:normal; font-size:10px; opacity:.7; }
+  .lp-card.lp-primary { border-color:var(--accent-line); background:linear-gradient(160deg, var(--accent-dim), var(--surface)); }
+  .lp-card.lp-primary .lp-name { color:var(--accent); }
+  .lp-foot { text-align:center; color:var(--text-faint); font-size:12px; margin:28px 0 12px; animation:lpUp .7s .3s ease both; }
+  @keyframes lpUp { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:none; } }
+  @media (prefers-reduced-motion: reduce) { .lp-orb, .lp-dot { animation:none; } .lp-hero, .lp-term-card, .lp-links, .lp-foot { animation:none; } }
+`;
+
 function buildFrontendHtml() {
   return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark light"><meta name="theme-color" content="#06090f">
 <title>Emby 反向代理</title><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
 <script>${THEME_INIT}</script>
-<style>${PAGE_STYLE}</style></head><body>
+<style>${PAGE_STYLE}${LANDING_CSS}</style></head><body>
 <div class="container">
   <div class="topbar">
     <a class="brand" href="/"><i class="brand-mark"></i><span class="bname">EMBY<span style="color:var(--accent)">·</span>PROXY</span><span class="brand-ver">${CURRENT_VERSION}</span></a>
     <div class="topbar-actions">
-      <a class="topbar-btn" href="https://yx.255432.xyz/" target="_blank" rel="noopener">优选域名<i class="ext" aria-hidden="true">↗</i></a>
-      <a class="topbar-btn" href="https://t.me/+7cbXthaBajszNjI1" target="_blank" rel="noopener">TG群组<i class="ext" aria-hidden="true">↗</i></a>
-      <span class="topbar-divider" aria-hidden="true"></span>
       <button class="topbar-btn topbar-theme" id="themeToggle" onclick="cycleTheme()">AUTO</button>
       <a href="/admin" class="topbar-btn is-accent">管理后台</a>
     </div>
   </div>
 
-  <div class="card hero">
+  <div class="lp-bg" aria-hidden="true"><i class="lp-orb lp-orb1"></i><i class="lp-orb lp-orb2"></i><i class="lp-orb lp-orb3"></i><i class="lp-grid"></i></div>
+
+  <div class="lp-hero">
     <div class="hero-kicker">REVERSE&nbsp;PROXY&nbsp;·&nbsp;EDGE&nbsp;NETWORK</div>
-    <h1>Emby <em>反向代理</em></h1>
-    <p>版本 ${CURRENT_VERSION} · 支持别名快捷入口与优选域名自动测速 · 边缘节点智能加速</p>
+    <h1 class="lp-title">Emby <em>反向代理</em></h1>
+    <p class="lp-sub">边缘节点智能加速 · 别名快捷入口 · 三态分流 · VPS 中继</p>
+    <div class="lp-status"><i class="lp-dot"></i>EDGE&nbsp;ONLINE&nbsp;·&nbsp;${CURRENT_VERSION}</div>
+  </div>
+
+  <div class="card lp-term-card">
     <div class="term">
       <div class="term-bar"><i></i><i></i><i></i><span>~/emby-proxy — usage</span></div>
       <div class="term-body">
@@ -2816,175 +2856,24 @@ function buildFrontendHtml() {
     </div>
   </div>
 
-  <div class="card">
-    <div class="sec-title">当前边缘节点 <span class="chip">EDGE</span></div>
-    <div id="edge-loading" class="muted"><span class="spin"></span>正在探测...</div>
-    <div id="edge-info" class="edge-box" style="display:none"></div>
+  <div class="lp-links">
+    <a class="lp-card lp-primary" href="/admin">
+      <span class="lp-ico">🎛️</span><span class="lp-name">管理后台</span><span class="lp-desc">路由 · 中继 · 统计 · 日志</span>
+    </a>
+    <a class="lp-card" href="https://t.me/+7cbXthaBajszNjI1" target="_blank" rel="noopener">
+      <span class="lp-ico">💬</span><span class="lp-name">TG 群组</span><span class="lp-desc">交流与公告 <i class="ext">↗</i></span>
+    </a>
+    <a class="lp-card" href="https://github.com/Dirige/EMBY_CF" target="_blank" rel="noopener">
+      <span class="lp-ico">🐙</span><span class="lp-name">GitHub</span><span class="lp-desc">源码与文档 <i class="ext">↗</i></span>
+    </a>
+    <a class="lp-card" href="https://yx.255432.xyz/" target="_blank" rel="noopener">
+      <span class="lp-ico">🛰️</span><span class="lp-name">优选域名</span><span class="lp-desc">线路监测 <i class="ext">↗</i></span>
+    </a>
   </div>
 
-  <div class="card">
-    <div class="sec-title">优选域名测速 <span class="chip">LATENCY</span></div>
-    <div class="toolbar" style="margin-bottom:14px">
-      <button class="btn btn-sm" id="btn-retest">重新测速</button>
-      <span id="speed-status" class="muted"></span>
-    </div>
-    <div id="domain-table-wrap"><p class="muted"><span class="spin"></span>正在测速...</p></div>
-  </div>
-
-  <div class="card">
-    <div class="sec-title">使用统计 <span class="chip">CF&nbsp;ANALYTICS</span></div>
-    <div id="stats-loading" class="muted"><span class="spin"></span>加载中...</div>
-    <div id="stats-body" style="display:none">
-      <div class="stat-row">
-        <div class="stat-card"><div>今日请求</div><div class="stat-val" id="st-req">0</div><div class="stat-sub" id="st-req-sub"></div></div>
-        <div class="stat-card"><div>今日流量</div><div class="stat-val" id="st-traffic">0 B</div><div class="stat-sub" id="st-traffic-sub"></div></div>
-        <div class="stat-card"><div>今日访问</div><div class="stat-val" id="st-uv">0</div><div class="stat-sub" id="st-uv-sub"></div></div>
-      </div>
-      <div class="stat-row">
-        <div class="stat-card"><div>中继今日请求</div><div class="stat-val" id="st-relay-req">—</div><div class="stat-sub" id="st-relay-req-sub">来源: VPS 中继</div></div>
-        <div class="stat-card"><div>中继今日流量</div><div class="stat-val" id="st-relay-traffic">—</div><div class="stat-sub" id="st-relay-traffic-sub">↑源站拉取 ↓发回客户端</div></div>
-      </div>
-      <div id="hourly-chart"></div>
-      <p class="muted" style="font-size:11px;margin-top:8px" id="st-updated"></p>
-    </div>
-  </div>
+  <p class="lp-foot">EMBY·PROXY · Cloudflare Workers · 请妥善使用</p>
 </div>
 <script>${THEME_LOGIC}
-var TAG = { fast:'极快', good:'良好', slow:'较慢', timeout:'超时' };
-var CLS = { fast:'tag-fast', good:'tag-good', slow:'tag-slow', timeout:'tag-timeout' };
-
-async function loadEdge() {
-  try {
-    const r = await fetch('/api/edge-info');
-    const d = await r.json();
-    document.getElementById('edge-loading').style.display = 'none';
-    const box = document.getElementById('edge-info');
-    box.style.display = 'grid';
-    box.innerHTML = [
-      ['客户端 IP', d.clientIp],
-      ['接入 POP', d.entryColo],
-      ['国家/地区', d.entryCountry + (d.entryCity ? ' / '+d.entryCity : '')],
-      ['边缘出口 IP', d.edgeIp],
-      ['落地 COLO', d.egressColo],
-    ].map(function(kv){ return '<div class="edge-item"><strong>'+kv[0]+'</strong><span>'+(kv[1]||'—')+'</span></div>'; }).join('');
-  } catch(e) { document.getElementById('edge-loading').textContent = '加载失败'; }
-}
-
-function renderDomainTable(results, best) {
-  const wrap = document.getElementById('domain-table-wrap');
-  if (!results.length) { wrap.innerHTML = '<p class="muted">无数据</p>'; return; }
-  let html = '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table style="min-width:520px"><thead><tr><th>#</th><th>名称</th><th>域名</th><th>延迟</th><th>状态</th></tr></thead><tbody>';
-  results.forEach((r, i) => {
-    const host = r.host || r.domain;
-    const isBest = best && best.domain === r.domain;
-    const pct = r.latency >= 0 ? Math.max(5, Math.min(100, Math.round(r.latency / 3))) : 0;
-    html += '<tr class="'+(isBest?'best':'')+'"><td class="mono" style="color:var(--text-faint)">'+(i+1)+'</td>'
-      + '<td style="white-space:nowrap">'+ (r.name||'—') + (isBest?' <span class="tag tag-best">BEST</span>':'') +'</td>'
-      + '<td><code style="font-size:12px">'+host+'</code></td>'
-      + '<td><div class="lat"><div class="lat-bar"><i style="width:'+pct+'%"></i></div><span>'+(r.latency>=0?r.latency+' ms':'—')+'</span></div></td>'
-      + '<td><span class="tag '+CLS[r.status||'timeout']+'">'+(TAG[r.status]||'—')+'</span></td></tr>';
-  });
-  wrap.innerHTML = html + '</tbody></table></div>';
-}
-
-${SPEED_TOOLS}
-
-function finalizeResults(rows) {
-  rows.forEach(r => { if (r.latency >= 0) r.status = r.latency < 100 ? 'fast' : r.latency < 300 ? 'good' : 'slow'; else r.status = 'timeout'; });
-  rows.sort((a,b) => { if (a.latency<0) return 1; if (b.latency<0) return -1; return a.latency-b.latency; });
-  return rows;
-}
-
-async function getOptimizedDomains() {
-  try {
-    const r = await fetch('/api/domains/list');
-    const d = await r.json();
-    if (d.success) return d.domains;
-  } catch (_) {}
-  return [];
-}
-
-async function runDomainSpeed(force) {
-  const st = document.getElementById('speed-status');
-  const wrap = document.getElementById('domain-table-wrap');
-  st.textContent = '正在测速...';
-  wrap.innerHTML = '<p class="muted"><span class="spin"></span>正在测试您本地网络到各优选域名的延迟...</p>';
-
-  const domains = await getOptimizedDomains();
-  const clientResults = await speedTestDomains(domains, function(d, n) { st.textContent = '正在测速 ' + d + '/' + n + '（在您本机浏览器中进行，每个域名测 4 次取中位数）'; });
-  finalizeResults(clientResults);
-  const clientOk = clientResults.filter(r => r.latency >= 0).length;
-  const best = clientResults.find(r => r.latency >= 0);
-  renderDomainTable(clientResults, best);
-
-  if (clientOk > 0) {
-    st.textContent = '测速完成 · ' + clientOk + ' 个可用 · 推荐: ' + (best ? best.domain : '无');
-  } else {
-    st.textContent = '测速失败，请检查网络或稍后重试';
-  }
-}
-
-async function loadRelayStatsCard() {
-  const reqEl = document.getElementById('st-relay-req');
-  const txEl = document.getElementById('st-relay-traffic');
-  if (!reqEl || !txEl) return;
-  try {
-    const r = await fetch('/admin/api/relay/stats');
-    const d = await r.json();
-    if (!d.ok) {
-      reqEl.textContent = '—';
-      document.getElementById('st-relay-req-sub').textContent = '来源: VPS 中继（' + (d.error || '不可读') + '）';
-      return;
-    }
-    const t = d.today || {};
-    reqEl.textContent = t.req || 0;
-    document.getElementById('st-relay-req-sub').textContent = '来源: VPS 中继 · 上海时区 ' + (d.date || '');
-    txEl.textContent = '↑' + fmtBytes(t.up_bytes) + ' ↓' + fmtBytes(t.down_bytes);
-    document.getElementById('st-relay-traffic-sub').textContent = '↑源站拉取 ↓发回客户端 · 上海时区 ' + (d.date || '');
-  } catch (e) {
-    reqEl.textContent = '—';
-    document.getElementById('st-relay-req-sub').textContent = '来源: VPS 中继（读取失败）';
-  }
-}
-
-async function loadStats() {
-  try {
-    const r = await fetch('/stats');
-    const d = await r.json();
-    if (d.error) { document.getElementById('stats-loading').textContent = d.error; return; }
-    document.getElementById('stats-loading').style.display = 'none';
-    document.getElementById('stats-body').style.display = 'block';
-    document.getElementById('st-req').textContent = d.data.todayRequests ?? 0;
-    document.getElementById('st-req-sub').textContent = '来源: ' + (d.data.d1 && d.data.d1.requests ? 'Worker 实际转发（D1）' : 'CF Zone Analytics');
-    document.getElementById('st-traffic').textContent = d.data.todayTraffic || '0 B';
-    document.getElementById('st-traffic-sub').textContent = '来源: ' + (d.data.d1 && d.data.d1.trafficBytes ? 'Worker 出站流量（D1）' : 'CF edgeResponseBytes');
-    document.getElementById('st-uv').textContent = d.data.todayVisits ?? 0;
-    document.getElementById('st-uv-sub').textContent = '来源: CF 独立访问';
-    const cfInfo = d.data.cfStatus || '';
-    const envInfo = d.data.envInfo || {};
-    document.getElementById('st-updated').textContent = '更新时间 ' + (d.data.lastUpdated||'') + ' · ' + cfInfo
-      + (envInfo.statsHost ? ' · 统计域名 ' + envInfo.statsHost : '')
-      + (envInfo.zoneId ? ' · Zone ' + envInfo.zoneId.slice(0, 8) + '…' : '')
-      + (d.data.cfError ? ' (' + d.data.cfError + ')' : '');
-    const hourly = d.data.hourlySeries || [];
-    if (hourly.length) {
-      const max = Math.max(1, ...hourly.map(h=>h.total));
-      let hhtml = '<div class="chart">';
-      hourly.forEach(h=>{
-        const ht = Math.max(2, Math.round((h.total/max)*68));
-        const label = h.label || '';
-        hhtml += '<div class="chart-col" title="'+label+' · '+h.total+' 次"><i style="height:'+ht+'px"></i><b>'+label.slice(0,2)+'</b></div>';
-      });
-      hhtml += '</div><p class="muted" style="font-size:11px;margin-top:6px">今日 24 小时请求分布（上海时区）</p>';
-      document.getElementById('hourly-chart').innerHTML = hhtml;
-    }
-  } catch(e) { document.getElementById('stats-loading').textContent = '统计加载失败'; }
-}
-
-document.getElementById('btn-retest').onclick = () => runDomainSpeed(true);
-loadEdge();
-runDomainSpeed(false);
-loadStats();
 </script></body></html>`;
 }
 
@@ -3045,6 +2934,39 @@ function buildAdminHtml() {
     </div>
   </div>
 
+  <nav class="tabbar" id="tabbar">
+    <button class="tab-btn active" data-tab="overview" onclick="switchTab('overview')">📊 概览</button>
+    <button class="tab-btn" data-tab="routes" onclick="switchTab('routes')">🚦 路由<span class="tab-badge" id="tabRouteCount"></span></button>
+    <button class="tab-btn" data-tab="domains" onclick="switchTab('domains')">🌐 优选</button>
+    <button class="tab-btn" data-tab="logs" onclick="switchTab('logs')">📜 日志</button>
+  </nav>
+
+  <div id="tab-overview" class="tab-pane">
+    <div class="card">
+      <div class="sec-title">使用统计 <span class="chip">CF&nbsp;ANALYTICS</span></div>
+      <div id="stats-loading" class="muted"><span class="spin"></span>加载中...</div>
+      <div id="stats-body" style="display:none">
+        <div class="stat-row">
+          <div class="stat-card"><div>今日请求</div><div class="stat-val" id="st-req">0</div><div class="stat-sub" id="st-req-sub"></div></div>
+          <div class="stat-card"><div>今日流量</div><div class="stat-val" id="st-traffic">0 B</div><div class="stat-sub" id="st-traffic-sub"></div></div>
+          <div class="stat-card"><div>今日访问</div><div class="stat-val" id="st-uv">0</div><div class="stat-sub" id="st-uv-sub"></div></div>
+        </div>
+        <div class="stat-row">
+          <div class="stat-card"><div>中继今日请求</div><div class="stat-val" id="st-relay-req">—</div><div class="stat-sub" id="st-relay-req-sub">来源: VPS 中继</div></div>
+          <div class="stat-card"><div>中继今日流量</div><div class="stat-val" id="st-relay-traffic">—</div><div class="stat-sub" id="st-relay-traffic-sub">↑源站拉取 ↓发回客户端</div></div>
+        </div>
+        <div id="hourly-chart"></div>
+        <p class="muted" style="font-size:11px;margin-top:8px" id="st-updated"></p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="sec-title">当前边缘节点 <span class="chip">EDGE</span></div>
+      <div id="edge-loading" class="muted"><span class="spin"></span>正在探测...</div>
+      <div id="edge-info" class="edge-box" style="display:none"></div>
+    </div>
+  </div>
+
+  <div id="tab-routes" class="tab-pane" style="display:none">
   <div class="card">
     <div class="sec-title">路由管理 <span class="chip" id="routeCount"></span></div>
     <div class="toolbar" style="margin-bottom:16px">
@@ -3101,20 +3023,26 @@ function buildAdminHtml() {
     <div id="relayStats" class="form-hint" style="margin-top:14px;font-family:ui-monospace,monospace;font-size:12px;white-space:pre-wrap;cursor:pointer" title="点击刷新">📊 中继流量：加载中...</div>
   </div>
 
+  </div>
+
+  <div id="tab-domains" class="tab-pane" style="display:none">
   <div class="card">
-    <div class="sec-title">优选域名管理 <span class="chip">CDN</span></div>
+    <div class="sec-title">优选域名 <span class="chip">CDN</span></div>
     <div class="toolbar" style="margin-bottom:16px">
       <button class="btn btn-sm" onclick="openDomainModal()">添加域名</button>
-      <button class="btn btn-sm" onclick="testDomains()">手动测速</button>
+      <button class="btn btn-sm" onclick="testDomains()">重新测速</button>
       <span id="domain-status" class="muted"></span>
     </div>
     <div id="domainList" class="domain-list"><p class="muted"><span class="spin"></span>加载中...</p></div>
   </div>
+  </div>
 
+  <div id="tab-logs" class="tab-pane" style="display:none">
   <div class="card">
     <div class="sec-title">操作日志 <span class="chip">AUDIT</span></div>
     <div class="toolbar" style="margin-bottom:16px"><button class="btn btn-sm" onclick="loadAudit()">刷新</button></div>
     <div id="auditList" class="muted">点击刷新查看最近 100 条操作</div>
+  </div>
   </div>
 </div>
 
@@ -3286,6 +3214,8 @@ function renderRoutes(list) {
   const el = document.getElementById('routeList');
   var countChip = document.getElementById('routeCount');
   if (countChip) countChip.textContent = list.length + ' 条';
+  var tabBadge = document.getElementById('tabRouteCount');
+  if (tabBadge) tabBadge.textContent = list.length;
   if (!list.length) {
     el.innerHTML = '<div class="empty-state" style="grid-column:1/-1"><span class="empty-state-icon">📦</span><p class="empty-state-text">暂无路由，点击上方按钮添加</p></div>';
     return;
@@ -3892,12 +3822,118 @@ document.getElementById('routePrefix').addEventListener('input', function() {
   document.getElementById('prefixPreview').textContent = this.value.trim() || 'myemby';
 });
 
-loadRoutes();
-loadQuickDNS();
-loadDomains();
-loadRelay();
-loadRelayStats();
-loadRelayStatsCard();
+// ---- Tab 引擎：切换 / 懒加载 / 记忆 / hash 同步 ----
+var TAB_NAMES = ['overview', 'routes', 'domains', 'logs'];
+var TAB_LOADED = {};
+function switchTab(name) {
+  if (TAB_NAMES.indexOf(name) < 0) name = 'overview';
+  for (var i = 0; i < TAB_NAMES.length; i++) {
+    var p = document.getElementById('tab-' + TAB_NAMES[i]);
+    if (p) p.style.display = TAB_NAMES[i] === name ? 'block' : 'none';
+  }
+  var btns = document.querySelectorAll('.tab-btn');
+  for (var j = 0; j < btns.length; j++) {
+    var on = btns[j].getAttribute('data-tab') === name;
+    if (on) btns[j].classList.add('active'); else btns[j].classList.remove('active');
+  }
+  try { localStorage.setItem('adminTab', name); } catch (e) {}
+  if (location.hash !== '#' + name) {
+    try { history.replaceState(null, '', '#' + name); } catch (e) {}
+  }
+  if (!TAB_LOADED[name]) { TAB_LOADED[name] = true; loadTabData(name); }
+}
+function loadTabData(name) {
+  if (name === 'overview') { loadStats(); loadEdge(); loadRelayStatsCard(); }
+  else if (name === 'routes') { loadRoutes(); loadQuickDNS(); loadRelay(); loadRelayStats(); }
+  else if (name === 'domains') { loadDomains(); }
+  else if (name === 'logs') { loadAudit(); }
+}
+window.addEventListener('hashchange', function() {
+  var h = (location.hash || '').replace('#', '');
+  if (TAB_NAMES.indexOf(h) >= 0) switchTab(h);
+});
+
+// ---- 数据加载（概览页：统计 / 边缘节点 / 中继汇总卡）----
+async function loadEdge() {
+  try {
+    const r = await fetch('/api/edge-info');
+    const d = await r.json();
+    document.getElementById('edge-loading').style.display = 'none';
+    const box = document.getElementById('edge-info');
+    box.style.display = 'grid';
+    box.innerHTML = [
+      ['客户端 IP', d.clientIp],
+      ['接入 POP', d.entryColo],
+      ['国家/地区', d.entryCountry + (d.entryCity ? ' / '+d.entryCity : '')],
+      ['边缘出口 IP', d.edgeIp],
+      ['落地 COLO', d.egressColo]
+    ].map(function(kv){ return '<div class="edge-item"><strong>'+kv[0]+'</strong><span>'+(kv[1]||'—')+'</span></div>'; }).join('');
+  } catch(e) { document.getElementById('edge-loading').textContent = '加载失败'; }
+}
+
+async function loadRelayStatsCard() {
+  const reqEl = document.getElementById('st-relay-req');
+  const txEl = document.getElementById('st-relay-traffic');
+  if (!reqEl || !txEl) return;
+  try {
+    const r = await fetch('/admin/api/relay/stats');
+    const d = await r.json();
+    if (!d.ok) {
+      reqEl.textContent = '—';
+      document.getElementById('st-relay-req-sub').textContent = '来源: VPS 中继（' + (d.error || '不可读') + '）';
+      return;
+    }
+    const t = d.today || {};
+    reqEl.textContent = t.req || 0;
+    document.getElementById('st-relay-req-sub').textContent = '来源: VPS 中继 · 上海时区 ' + (d.date || '');
+    txEl.textContent = '↑' + fmtBytes(t.up_bytes) + ' ↓' + fmtBytes(t.down_bytes);
+    document.getElementById('st-relay-traffic-sub').textContent = '↑源站拉取 ↓发回客户端 · 上海时区 ' + (d.date || '');
+  } catch (e) {
+    reqEl.textContent = '—';
+    document.getElementById('st-relay-req-sub').textContent = '来源: VPS 中继（读取失败）';
+  }
+}
+
+async function loadStats() {
+  try {
+    const r = await fetch('/stats');
+    const d = await r.json();
+    if (d.error) { document.getElementById('stats-loading').textContent = d.error; return; }
+    document.getElementById('stats-loading').style.display = 'none';
+    document.getElementById('stats-body').style.display = 'block';
+    document.getElementById('st-req').textContent = d.data.todayRequests ?? 0;
+    document.getElementById('st-req-sub').textContent = '来源: ' + (d.data.d1 && d.data.d1.requests ? 'Worker 实际转发（D1）' : 'CF Zone Analytics');
+    document.getElementById('st-traffic').textContent = d.data.todayTraffic || '0 B';
+    document.getElementById('st-traffic-sub').textContent = '来源: ' + (d.data.d1 && d.data.d1.trafficBytes ? 'Worker 出站流量（D1）' : 'CF edgeResponseBytes');
+    document.getElementById('st-uv').textContent = d.data.todayVisits ?? 0;
+    document.getElementById('st-uv-sub').textContent = '来源: CF 独立访问';
+    const cfInfo = d.data.cfStatus || '';
+    const envInfo = d.data.envInfo || {};
+    document.getElementById('st-updated').textContent = '更新时间 ' + (d.data.lastUpdated||'') + ' · ' + cfInfo
+      + (envInfo.statsHost ? ' · 统计域名 ' + envInfo.statsHost : '')
+      + (envInfo.zoneId ? ' · Zone ' + envInfo.zoneId.slice(0, 8) + '…' : '')
+      + (d.data.cfError ? ' (' + d.data.cfError + ')' : '');
+    const hourly = d.data.hourlySeries || [];
+    if (hourly.length) {
+      const max = Math.max(1, ...hourly.map(h=>h.total));
+      let hhtml = '<div class="chart">';
+      hourly.forEach(h=>{
+        const ht = Math.max(2, Math.round((h.total/max)*68));
+        const label = h.label || '';
+        hhtml += '<div class="chart-col" title="'+label+' · '+h.total+' 次"><i style="height:'+ht+'px"></i><b>'+label.slice(0,2)+'</b></div>';
+      });
+      hhtml += '</div><p class="muted" style="font-size:11px;margin-top:6px">今日 24 小时请求分布（上海时区）</p>';
+      document.getElementById('hourly-chart').innerHTML = hhtml;
+    }
+  } catch(e) { document.getElementById('stats-loading').textContent = '统计加载失败'; }
+}
+
+(function initTabs() {
+  var h = (location.hash || '').replace('#', '');
+  if (TAB_NAMES.indexOf(h) < 0) { try { h = localStorage.getItem('adminTab') || ''; } catch (e) {} }
+  if (TAB_NAMES.indexOf(h) < 0) h = 'overview';
+  switchTab(h);
+})();
 setInterval(loadRelayStatsCard, 60000);
 </script></body></html>`;
 }
