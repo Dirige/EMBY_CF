@@ -1,4 +1,4 @@
-const CURRENT_VERSION = 'v6.4.4';
+const CURRENT_VERSION = 'v6.4.5';
 
 // 内置优选域名
 const DEFAULT_OPTIMIZED_DOMAINS = [
@@ -2844,6 +2844,13 @@ const LANDING_CSS = `
   .lp2-ico { font-size:17px; }
   .lp2-arrow { margin-left:auto; color:var(--text-faint); font-size:13px; }
   .lp2-foot { margin:auto 0 0; padding-top:26px; color:var(--text-faint); font-size:11px; text-align:center; }
+  .lp2-mini { display:flex; gap:10px; margin-top:18px; }
+  .lp2-mini a { flex:1; display:flex; align-items:center; justify-content:center; gap:6px; padding:10px; border:1px solid var(--line); border-radius:10px; background:var(--surface-2); color:var(--text-dim); text-decoration:none; font-size:12.5px; font-weight:600; transition:border-color .16s ease, color .16s ease; }
+  .lp2-mini a:hover { border-color:var(--accent-line); color:var(--text); }
+  .lp2-input { width:100%; padding:13px 16px; border-radius:12px; border:1px solid var(--line-strong); background:var(--input-bg); color:var(--text); font-size:15px; letter-spacing:.15em; text-align:center; outline:none; transition:border-color .16s ease, box-shadow .16s ease; }
+  .lp2-input:focus { border-color:var(--accent-line); box-shadow:0 0 0 3px var(--accent-dim); }
+  .lp2-err { min-height:1.4em; margin:10px 0 12px; font-size:13px; color:var(--bad); text-align:center; }
+  button.lp2-cta { width:100%; justify-content:center; cursor:pointer; border:0; font-family:inherit; }
   @media (max-width: 780px) {
     .lp2-card { grid-template-columns:1fr; min-height:0; }
     .lp2-left { gap:28px; padding:32px 28px; }
@@ -2853,7 +2860,23 @@ const LANDING_CSS = `
   @media (prefers-reduced-motion: reduce) { .lp2-photo, .lp2-card { animation:none; } }
 `;
 
-function buildFrontendHtml() {
+function buildFrontendHtml(authed) {
+  const rightPanel = authed ? `    <h2>快捷入口</h2>
+    <p class="lp2-sub">节点管理 · 优选线路 · 使用统计</p>
+    <a class="lp2-cta" href="/admin">进入管理后台 <span>→</span></a>
+    <nav class="lp2-links">
+      <a href="https://t.me/+7cbXthaBajszNjI1" target="_blank" rel="noopener"><span class="lp2-ico">💬</span><span class="lp2-name">TG 群组</span><span class="lp2-arrow">↗</span></a>
+      <a href="https://github.com/Dirige/EMBY_CF" target="_blank" rel="noopener"><span class="lp2-ico">🐙</span><span class="lp2-name">GitHub</span><span class="lp2-arrow">↗</span></a>
+      <a href="https://yx.255432.xyz/" target="_blank" rel="noopener"><span class="lp2-ico">🛰️</span><span class="lp2-name">优选域名监测</span><span class="lp2-arrow">↗</span></a>
+    </nav>` : `    <h2>管理员登录</h2>
+    <p class="lp2-sub">输入管理密钥进入控制台</p>
+    <input type="password" id="tokenInput" class="lp2-input" placeholder="管理密钥" autocomplete="off" onkeydown="if(event.key==='Enter')lpLogin()">
+    <p id="loginErr" class="lp2-err"></p>
+    <button class="lp2-cta" id="loginBtn" onclick="lpLogin()">登 录 <span>→</span></button>
+    <div class="lp2-mini">
+      <a href="https://t.me/+7cbXthaBajszNjI1" target="_blank" rel="noopener">💬 群组</a>
+      <a href="https://github.com/Dirige/EMBY_CF" target="_blank" rel="noopener">🐙 GitHub</a>
+    </div>`;
   return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark light"><meta name="theme-color" content="#06090f">
 <title>Emby 反向代理 · 统一入口</title><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
@@ -2874,56 +2897,26 @@ function buildFrontendHtml() {
     </div>
   </section>
   <section class="lp2-right">
-    <h2>快捷入口</h2>
-    <p class="lp2-sub">节点管理 · 优选线路 · 使用统计</p>
-    <a class="lp2-cta" href="/admin">进入管理后台 <span>→</span></a>
-    <nav class="lp2-links">
-      <a href="https://t.me/+7cbXthaBajszNjI1" target="_blank" rel="noopener"><span class="lp2-ico">💬</span><span class="lp2-name">TG 群组</span><span class="lp2-arrow">↗</span></a>
-      <a href="https://github.com/Dirige/EMBY_CF" target="_blank" rel="noopener"><span class="lp2-ico">🐙</span><span class="lp2-name">GitHub</span><span class="lp2-arrow">↗</span></a>
-      <a href="https://yx.255432.xyz/" target="_blank" rel="noopener"><span class="lp2-ico">🛰️</span><span class="lp2-name">优选域名监测</span><span class="lp2-arrow">↗</span></a>
-    </nav>
+${rightPanel}
     <p class="lp2-foot">每日壁纸来自 Bing · 请妥善使用</p>
   </section>
 </main>
 <script>${THEME_LOGIC}
-</script></body></html>`;
-}
-
-function buildLoginHtml() {
-  return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="dark light"><meta name="theme-color" content="#06090f">
-<title>管理登录</title><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔐</text></svg>">
-<script>${THEME_INIT}</script>
-<style>${PAGE_STYLE}</style></head><body>
-<div class="login-wrap">
-  <div class="login-theme"><button class="theme-toggle" id="themeToggle" onclick="cycleTheme()">AUTO</button></div>
-  <div class="login-box">
-    <div style="text-align:center;margin-bottom:26px">
-      <div class="hero-kicker" style="margin-bottom:10px">ADMIN&nbsp;ACCESS</div>
-      <h1 style="font-size:1.5em;font-weight:800;letter-spacing:-.01em">管理后台</h1>
-      <p class="muted" style="margin-top:8px">请输入管理密钥以继续</p>
-    </div>
-    <input type="password" id="tokenInput" placeholder="管理密钥" onkeydown="if(event.key==='Enter')login()" style="text-align:center;letter-spacing:.2em">
-    <p id="loginErr" style="color:var(--bad);font-size:13px;min-height:1.4em;margin:10px 0 6px;text-align:center"></p>
-    <button class="btn btn-solid" style="width:100%;padding:12px" id="loginBtn" onclick="login()">登 录</button>
-  </div>
-</div>
-<script>${THEME_LOGIC}
-async function login(){
-  const t=document.getElementById('tokenInput').value.trim();
-  const err=document.getElementById('loginErr');
-  const btn=document.getElementById('loginBtn');
-  err.textContent='';
-  if(!t){ err.textContent='请输入密钥'; return; }
-  btn.disabled=true; btn.textContent='验证中...';
-  try{
-    const r=await fetch('/admin/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:t})});
-    const d=await r.json();
-    if(d.ok){ location.href='/admin'; return; }
-    err.textContent=d.error||'登录失败';
-  } catch(e){ err.textContent='请求失败: '+e.message; }
-  btn.disabled=false; btn.textContent='登 录';
-}
+${authed ? '' : `async function lpLogin() {
+  var t = document.getElementById('tokenInput').value.trim();
+  var err = document.getElementById('loginErr');
+  var btn = document.getElementById('loginBtn');
+  err.textContent = '';
+  if (!t) { err.textContent = '请输入密钥'; return; }
+  btn.disabled = true; btn.style.opacity = '.6';
+  try {
+    var r = await fetch('/admin/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: t }) });
+    var d = await r.json();
+    if (d.ok) { location.href = '/admin'; return; }
+    err.textContent = d.error || '登录失败';
+  } catch (e) { err.textContent = '请求失败: ' + e.message; }
+  btn.disabled = false; btn.style.opacity = '';
+}`}
 </script></body></html>`;
 }
 
@@ -4057,7 +4050,10 @@ export default {
       return res;
     }
 
-    if (url.pathname === '/') return html(buildFrontendHtml());
+    if (url.pathname === '/') {
+      const authed = await isAdmin(request, env);
+      return html(buildFrontendHtml(authed));
+    }
     if (url.pathname === '/favicon.ico') return new Response('', { headers: { 'Content-Type': 'image/x-icon' } });
     if (url.pathname.startsWith('/cdn-cgi/')) return new Response('Not Found', { status: 404 });
 
@@ -4103,8 +4099,8 @@ export default {
     }
 
     if (url.pathname === '/admin' || url.pathname === '/admin/') {
-      const page = (await isAdmin(request, env)) ? buildAdminHtml() : buildLoginHtml();
-      const res = html(page);
+      if (!(await isAdmin(request, env))) return new Response(null, { status: 302, headers: { Location: '/' } });
+      const res = html(buildAdminHtml());
       res.headers.set('X-Robots-Tag', 'noindex, nofollow');
       return res;
     }
