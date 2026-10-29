@@ -1,4 +1,4 @@
-const CURRENT_VERSION = 'v6.4.3';
+const CURRENT_VERSION = 'v6.4.4';
 
 // 内置优选域名
 const DEFAULT_OPTIMIZED_DOMAINS = [
@@ -2390,7 +2390,7 @@ const PAGE_STYLE = `
   :root { --radius: 12px; --radius-s: 8px; }
   html[data-theme="dark"] {
     --bg: #06090f; --bg-grid: rgba(120,160,200,.045); --glow: rgba(56,209,255,.07);
-    --surface: rgba(13,19,30,.74); --surface-2: rgba(20,28,42,.5);
+    --surface: rgba(13,19,30,.58); --surface-2: rgba(20,28,42,.45);
     --line: rgba(148,163,184,.14); --line-strong: rgba(148,163,184,.3);
     --text: #dce5f0; --text-dim: #8494a8; --text-faint: #5a6b80;
     --accent: #41d9ff; --accent-dim: rgba(65,217,255,.12); --accent-line: rgba(65,217,255,.45);
@@ -2403,7 +2403,7 @@ const PAGE_STYLE = `
   }
   html[data-theme="light"] {
     --bg: #f2f5f8; --bg-grid: rgba(30,60,90,.06); --glow: rgba(14,116,144,.06);
-    --surface: rgba(255,255,255,.88); --surface-2: rgba(255,255,255,.65);
+    --surface: rgba(255,255,255,.78); --surface-2: rgba(255,255,255,.6);
     --line: rgba(15,30,50,.1); --line-strong: rgba(15,30,50,.22);
     --text: #101826; --text-dim: #51617a; --text-faint: #8595ab;
     --accent: #087ea8; --accent-dim: rgba(8,126,168,.09); --accent-line: rgba(8,126,168,.45);
@@ -2499,7 +2499,7 @@ const PAGE_STYLE = `
   .topbar-btn.is-accent:hover { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); filter: brightness(1.08); box-shadow: 0 6px 18px var(--accent-dim); }
 
   .card {
-    background: var(--surface); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    background: var(--surface); backdrop-filter: blur(18px) saturate(1.35); -webkit-backdrop-filter: blur(18px) saturate(1.35);
     border: 1px solid var(--line); border-radius: var(--radius);
     padding: 24px; position: relative;
     animation: rise .55s cubic-bezier(.22,1,.36,1) both;
@@ -2600,7 +2600,7 @@ const PAGE_STYLE = `
   .tab-btn.active { background:var(--accent); color:var(--accent-ink); box-shadow:0 4px 14px var(--accent-dim); }
   .tab-badge { display:inline-block; margin-left:5px; padding:0 6px; border-radius:99px; font-size:10px; background:var(--accent-dim); color:var(--accent); }
   .tab-btn.active .tab-badge { background:rgba(255,255,255,.25); color:inherit; }
-  .admin-bg { position:fixed; inset:0; z-index:0; background:center/cover no-repeat url(/bing-wallpaper); opacity:.07; pointer-events:none; }
+  .admin-bg { position:fixed; inset:0; z-index:0; background:center/cover no-repeat url(/bing-wallpaper); opacity:.18; pointer-events:none; }
   .container { position:relative; z-index:1; }
   .route-link { font-size:12px; word-break:break-all; color:var(--accent); cursor:pointer; }
   .route-link:hover { text-decoration:underline; }
@@ -3269,7 +3269,7 @@ function renderRoutes(list) {
         '<div class="route-title">' +
           '<h3 class="route-name">' + esc(remarkName) + '</h3>' +
           '<span class="route-path route-link" title="点击复制">' + esc(fullUrl) + '</span>' +
-          '<button class="btn btn-sm btn-copy" onclick="copyRoute(this)" data-copy="' + esc(fullUrl) + '" title="一键复制完整链接">⧉ 复制</button>' +
+          '<button class="btn btn-sm btn-copy" onclick="copyRoute(this)" data-copy="' + esc(fullUrl) + '" title="复制完整链接">⧉</button>' +
         '</div>' +
       '</div>' +
       '<div class="target-list">' + targetsHtml + '</div>' +
