@@ -1,4 +1,4 @@
-const CURRENT_VERSION = 'v6.4.6';
+const CURRENT_VERSION = 'v6.4.7';
 
 // 内置优选域名
 const DEFAULT_OPTIMIZED_DOMAINS = [
@@ -2857,6 +2857,7 @@ function applyTheme(pref){
   if(btn){ btn.textContent=pref==='auto'?'AUTO':(pref==='dark'?'DARK':'LIGHT'); btn.title=pref==='auto'?'跟随系统':(pref==='dark'?'深色模式':'浅色模式'); }
   var meta=document.querySelector('meta[name=theme-color]');
   if(meta){ meta.setAttribute('content',dark?'#06090f':'#f2f5f8'); }
+  if(window.__dynPalThemeHook){ try{ window.__dynPalThemeHook(); }catch(e){} }
 }
 function cycleTheme(){
   var next=THEME_PREF==='auto'?'dark':(THEME_PREF==='dark'?'light':'auto');
@@ -2873,12 +2874,106 @@ if(window.matchMedia){
 applyTheme(THEME_PREF);
 `;
 
+// 壁纸动态取色：纯色彩数学（无 DOM 依赖，可单独抽出做 node 单测）
+const PALETTE_MATH = `
+function hsl2rgb(h,s,l){h=((h%360)+360)%360;var c=(1-Math.abs(2*l-1))*s,x=c*(1-Math.abs((h/60)%2-1)),m=l-c/2,r,g,b;
+if(h<60){r=c;g=x;b=0}else if(h<120){r=x;g=c;b=0}else if(h<180){r=0;g=c;b=x}else if(h<240){r=0;g=x;b=c}else if(h<300){r=x;g=0;b=c}else{r=c;g=0;b=x}
+return{r:Math.round((r+m)*255),g:Math.round((g+m)*255),b:Math.round((b+m)*255)};}
+function rgb2hsl(r,g,b){r/=255;g/=255;b/=255;var mx=Math.max(r,g,b),mn=Math.min(r,g,b),h=0,s=0,l=(mx+mn)/2,d=mx-mn;
+if(d>0){s=l>0.5?d/(2-mx-mn):d/(mx+mn);
+if(mx===r)h=60*(((g-b)/d)%6);else if(mx===g)h=60*((b-r)/d+2);else h=60*((r-g)/d+4);}
+if(h<0)h+=360;return{h:h,s:s,l:l};}
+function colorYiq(r,g,b){return (r*299+g*587+b*114)/1000;}
+function clampNum(v,a,b){return v<a?a:(v>b?b:v);}
+`;
+
+// 壁纸动态配色引擎：取色 → 覆盖主题变量（accent/背景/玻璃色相），文字与语义色不动；灰图自动跳过
+const DYN_PALETTE = PALETTE_MATH + `
+(function(){
+  var lastP=null;
+  function todayKey(){ return new Date(Date.now()+8*3600000).toISOString().slice(0,10); }
+  function buildVars(p,dark){
+    var a=hsl2rgb(p.h,p.s,dark?0.55:0.40);
+    var v={'--accent':'rgb('+a.r+','+a.g+','+a.b+')',
+      '--accent-dim':'rgba('+a.r+','+a.g+','+a.b+','+(dark?'0.12':'0.09')+')',
+      '--accent-line':'rgba('+a.r+','+a.g+','+a.b+',0.45)',
+      '--accent-ink':colorYiq(a.r,a.g,a.b)>150?'#0b1620':'#ffffff'};
+    if(dark){
+      var bg=hsl2rgb(p.bh,p.bs,0.05);
+      var sf=hsl2rgb(p.bh,0.3,0.09),sf2=hsl2rgb(p.bh,0.28,0.13),ib=hsl2rgb(p.bh,0.28,0.06);
+      v['--bg']='rgb('+bg.r+','+bg.g+','+bg.b+')';
+      v['--glow']='rgba('+a.r+','+a.g+','+a.b+',0.07)';
+      v['--surface']='rgba('+sf.r+','+sf.g+','+sf.b+',0.58)';
+      v['--surface-2']='rgba('+sf2.r+','+sf2.g+','+sf2.b+',0.45)';
+      v['--input-bg']='rgba('+ib.r+','+ib.g+','+ib.b+',0.62)';
+      v['--veil-rgb']=bg.r+','+bg.g+','+bg.b;
+    }
+    return v;
+  }
+  function applyDyn(p){
+    lastP=p;
+    var dark=document.documentElement.getAttribute('data-theme')!=='light';
+    var v=buildVars(p,dark),st=document.documentElement.style;
+    for(var k in v)st.setProperty(k,v[k]);
+    var meta=document.querySelector('meta[name=theme-color]');
+    if(meta&&dark&&v['--bg'])meta.setAttribute('content',v['--bg']);
+  }
+  window.__dynPalThemeHook=function(){ if(lastP)applyDyn(lastP); };
+  window.__dynBuildVars=buildVars;
+  var stored=null;
+  try{stored=JSON.parse(localStorage.getItem('dyn-pal')||'null');}catch(e){}
+  if(stored&&stored.d===todayKey()&&typeof stored.h==='number'&&typeof stored.bh==='number'){try{applyDyn(stored);}catch(e){}}
+  function extract(){
+    var img=new Image();
+    img.onload=function(){
+      try{
+        var c=document.createElement('canvas');c.width=48;c.height=48;
+        var ctx=c.getContext('2d');if(!ctx)return;
+        ctx.drawImage(img,0,0,48,48);
+        var d=ctx.getImageData(0,0,48,48).data;
+        var buckets={},total=0;
+        for(var i=0;i<d.length;i+=4){
+          var r=d[i],g=d[i+1],b=d[i+2];
+          if(d[i+3]<128)continue;
+          var mx=Math.max(r,g,b),mn=Math.min(r,g,b);
+          var l=(mx+mn)/510;
+          if(l<0.06||l>0.94)continue;
+          var dd=(mx-mn)/255;
+          var s=dd===0?0:dd/(1-Math.abs(2*l-1));
+          total++;
+          var key=((r>>4)<<8)|((g>>4)<<4)|(b>>4);
+          var bk=buckets[key];if(!bk){bk={n:0,r:0,g:0,b:0,s:0};buckets[key]=bk;}
+          bk.n++;bk.r+=r;bk.g+=g;bk.b+=b;bk.s+=s;
+        }
+        if(total<60)return;
+        var best=null,bestScore=0,dom=null,domN=0;
+        for(var k in buckets){var x=buckets[k];
+          if(x.n>domN){domN=x.n;dom=x;}
+          var as=x.s/x.n;
+          if(as>=0.28){var sc=x.n*(as+0.1);if(sc>bestScore){bestScore=sc;best=x;}}
+        }
+        if(!best||best.n<12)return;
+        var ac=rgb2hsl(best.r/best.n,best.g/best.n,best.b/best.n);
+        var bc=dom?rgb2hsl(dom.r/dom.n,dom.g/dom.n,dom.b/dom.n):ac;
+        var p={d:todayKey(),h:Math.round(ac.h),s:clampNum(ac.s,0.45,0.8),bh:Math.round(bc.h),bs:clampNum(bc.s||0.2,0.15,0.35)};
+        var old=null;try{old=JSON.parse(localStorage.getItem('dyn-pal')||'null');}catch(e){}
+        if(old&&old.d===p.d&&old.h===p.h&&old.bh===p.bh)return;
+        try{localStorage.setItem('dyn-pal',JSON.stringify(p));}catch(e){}
+        applyDyn(p);
+      }catch(e){}
+    };
+    img.src='/bing-wallpaper';
+  }
+  if(document.readyState==='complete')extract();else window.addEventListener('load',extract);
+})();
+`;
+
 const LANDING_CSS = `
   body.lp2 { display:flex; align-items:center; justify-content:center; min-height:100vh; padding:24px; }
   .lp2-bg { position:fixed; inset:0; z-index:0; }
-  .lp2-photo { position:absolute; inset:0; background:#06090f center/cover no-repeat url(/bing-wallpaper); animation:lp2Zoom 36s ease-in-out infinite alternate; }
+  .lp2-photo { position:absolute; inset:0; background:var(--bg,#06090f) center/cover no-repeat url(/bing-wallpaper); animation:lp2Zoom 36s ease-in-out infinite alternate; }
   @keyframes lp2Zoom { from { transform:scale(1); } to { transform:scale(1.07); } }
-  .lp2-veil { position:absolute; inset:0; background:linear-gradient(115deg, rgba(6,9,15,.9) 0%, rgba(6,9,15,.74) 50%, rgba(6,9,15,.62) 100%); }
+  .lp2-veil { position:absolute; inset:0; background:linear-gradient(115deg, rgba(var(--veil-rgb,6,9,15),.9) 0%, rgba(var(--veil-rgb,6,9,15),.74) 50%, rgba(var(--veil-rgb,6,9,15),.62) 100%); }
   .lp2-card { position:relative; z-index:1; display:grid; grid-template-columns:1.08fr 1fr; width:min(940px,100%); min-height:520px; border-radius:24px; overflow:hidden; border:1px solid var(--line-strong); box-shadow:0 30px 90px rgba(0,0,0,.5); backdrop-filter:blur(22px); -webkit-backdrop-filter:blur(22px); animation:lp2Up .8s ease both; }
   @keyframes lp2Up { from { opacity:0; transform:translateY(22px); } to { opacity:1; transform:none; } }
   .lp2-left { position:relative; display:flex; flex-direction:column; justify-content:space-between; gap:40px; padding:40px 38px; background:linear-gradient(165deg, var(--accent-dim), rgba(13,19,30,.42) 60%); color:var(--text); overflow:hidden; }
@@ -2943,6 +3038,7 @@ function buildFrontendHtml(authed) {
 <meta name="color-scheme" content="dark light"><meta name="theme-color" content="#06090f">
 <title>Emby 反向代理 · 统一入口</title><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
 <script>${THEME_INIT}</script>
+<script>${DYN_PALETTE}</script>
 <style>${PAGE_STYLE}${LANDING_CSS}</style></head><body class="lp2">
 <div class="lp2-bg" aria-hidden="true"><i class="lp2-photo"></i><i class="lp2-veil"></i></div>
 <main class="lp2-card">
@@ -2987,6 +3083,7 @@ function buildAdminHtml() {
 <meta name="color-scheme" content="dark light"><meta name="theme-color" content="#06090f">
 <title>管理后台</title><link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎛️</text></svg>">
 <script>${THEME_INIT}</script>
+<script>${DYN_PALETTE}</script>
 <style>${PAGE_STYLE}</style></head><body>
 <div id="toast"></div>
 <div class="admin-bg" aria-hidden="true"></div>
