@@ -2,11 +2,11 @@
 
 **Emby 反向代理 · 多用户路由面板**
 
-单文件 Cloudflare Worker，无需服务器、无需构建。集成反代、优选域名 DNS、访问统计、Telegram 日报和多用户子域名，仓库当前版本 **v6.7.5-multi**，入口文件 [worker.js](worker.js)。
+单文件 Cloudflare Worker，无需服务器、无需构建。集成反代、优选域名 DNS、访问统计、Telegram 日报、多用户子域名和 VPS 中继分流，仓库当前版本 **v6.8.0-multi**，入口文件 [worker.js](worker.js)。
 
 ![Platform](https://img.shields.io/badge/Cloudflare-Workers-F38020?style=flat-square&logo=cloudflare&logoColor=white)
 ![Database](https://img.shields.io/badge/D1-Database-00E5FF?style=flat-square)
-![Version](https://img.shields.io/badge/version-v6.7.5--multi-41d9ff?style=flat-square)
+![Version](https://img.shields.io/badge/version-v6.8.0--multi-41d9ff?style=flat-square)
 [![License](https://img.shields.io/badge/License-MIT-00FF9D?style=flat-square)](LICENSE)
 
 [![优选域名监控](https://img.shields.io/badge/Youxuan-yx.255432.xyz-00E5FF?style=flat-square)](https://yx.255432.xyz/)
@@ -37,6 +37,16 @@
 | 访问统计 | D1 按小时聚合请求与流量，Cloudflare Analytics 作为补充 |
 | 通知 | Telegram 日报、线路异常告警、通用 Webhook |
 | 访问控制 | IP 透传模式、IP 白名单/黑名单、自定义请求头 |
+| VPS 中继 | 后台配置 VPS 中继地址与密钥；CF 直连失败（网络错误/401/403/451）自动切换 VPS，覆盖全部路由与 `/https://源站:端口` 直连代理路径；中继限额超限自动回落直连 |
+
+### VPS 中继说明
+
+在 **后台 → 设置 → VPS 中继** 填入中继地址（如 `https://relay.example.com:2087`）和密钥，点「测试连通」——联通后**所有路由自动启用**中继（默认即为启用状态）。
+
+- **自动切换**：请求始终 CF 直连优先，只有直连失败（网络错误、401/403/451 地区拦截）才经 VPS 中继重发，不额外消耗 VPS 流量
+- **回落保护**：VPS 流量限额超限（响应带 `X-Relay-Denied` 头）时静默回落直连，用户无感
+- **可观测**：回退成功带 `X-Relay-Fallback: 1` 响应头，审计日志记录 `relay.fallback` 事件（5 分钟节流）
+- 中继服务端（Go 单文件）与个人版共用，部署与限额配置见 [personal/README.md](personal/README.md)
 
 ## 快速开始
 

@@ -1,4 +1,4 @@
-const CURRENT_VERSION = 'v6.7.5-multi';
+const CURRENT_VERSION = 'v6.8.0-multi';
 
 // 内置优选域名
 const DEFAULT_OPTIMIZED_DOMAINS = [
@@ -1384,7 +1384,7 @@ function logoutResponse() {
 }
 
 // ---- 设置（存 D1 settings 表，30 秒内存缓存）----
-const SETTING_KEYS = ['health_check', 'rate_limit_per_min', 'manual_redirect_domains', 'domain_proxy_rules', 'tg_daily_report'];
+const SETTING_KEYS = ['health_check', 'rate_limit_per_min', 'manual_redirect_domains', 'domain_proxy_rules', 'tg_daily_report', 'relay_url', 'relay_secret', 'relay_enabled'];
 let settingsCache = { exp: 0, v: null };
 
 async function getSettings(env) {
@@ -1405,6 +1405,10 @@ async function getSettings(env) {
     rateLimitPerMin: Math.max(0, parseInt(raw.rate_limit_per_min || '0', 10) || 0),
     manualDomains: String(raw.manual_redirect_domains || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean),
     domainProxyRules: { ...DOMAIN_PROXY_RULES, ...rules },
+    // VPS 中继：默认启用（relay_enabled 缺省 = 开）；未配置 url/secret 时自然不生效
+    relayUrl: String(raw.relay_url || '').trim(),
+    relaySecret: String(raw.relay_secret || '').trim(),
+    relayEnabled: String(raw.relay_enabled == null ? '1' : raw.relay_enabled) !== '0',
   };
   settingsCache = { exp: now + 30000, v };
   return v;
@@ -2299,9 +2303,11 @@ async function handleAdminApi(request, env, url, session) {
   if (url.pathname === '/admin/api/settings') {
     if (request.method === 'GET') {
       const st = await getSettings(env);
+      const safeRaw = { ...st.raw };
+      if (safeRaw.relay_secret) safeRaw.relay_secret = safeRaw.relay_secret.slice(0, 6) + '...'; // 密钥不打明文
       return json({
         success: true,
-        settings: st.raw,
+        settings: safeRaw,
         notify: {
           telegram: Boolean(getTelegramToken(env) && getTelegramChatId(env)),
           webhook: Boolean(env.NOTIFY_WEBHOOK),
@@ -2319,6 +2325,69 @@ async function handleAdminApi(request, env, url, session) {
       for (const k of SETTING_KEYS) if (k in data) await setSetting(env, k, data[k] ?? '');
       await auditLog(env, 'settings', Object.keys(data).filter(k => SETTING_KEYS.includes(k)).join(','));
       return json({ success: true });
+    }
+  }
+
+  // ---- VPS 中继配置（v6.8.0）：测试联通后自动全局启用 ----
+  if (url.pathname === '/admin/api/relay' && request.method === 'GET') {
+    const st = await getSettings(env);
+    return json({
+      success: true,
+      relay_url: st.relayUrl,
+      relay_enabled: st.relayEnabled ? '1' : '0',
+      has_secret: !!st.relaySecret,
+      secret_hint: st.relaySecret ? st.relaySecret.slice(0, 6) + '...' + st.relaySecret.slice(-4) : '',
+      active: !!(st.relayEnabled && st.relayUrl && st.relaySecret),
+    });
+  }
+  if (url.pathname === '/admin/api/relay' && request.method === 'POST') {
+    const data = await readJson(request) || {};
+    const url = String(data.relay_url ?? '').trim();
+    if (url) {
+      const u = normalizeRelayBase(url);
+      if (!/^https?:\/\//i.test(u)) return json({ error: '中继地址必须是 http(s):// 开头' }, 400);
+      await setSetting(env, 'relay_url', u);
+    }
+    const secret = String(data.relay_secret ?? '').trim();
+    if (secret) await setSetting(env, 'relay_secret', secret);
+    if (data.relay_enabled != null) await setSetting(env, 'relay_enabled', data.relay_enabled === '1' || data.relay_enabled === true ? '1' : '0');
+    await auditLog(env, 'relay.save', `url=${url ? '已更新' : '未变'} secret=${secret ? '已更新' : '未变'} enabled=${data.relay_enabled != null ? data.relay_enabled : '未变'}`);
+    return json({ success: true });
+  }
+  if (url.pathname === '/admin/api/relay/test' && request.method === 'POST') {
+    const st = await getSettings(env);
+    const base = normalizeRelayBase(st.relayUrl);
+    if (!base || !st.relaySecret) return json({ ok: false, error: '请先填写中继地址和密钥并保存' });
+    const t0 = Date.now();
+    try {
+      const res = await fetch(new Request(base + '/_relay/health', { headers: { 'X-Relay-Key': st.relaySecret } }));
+      const text = (await res.text()).slice(0, 400);
+      let body = null;
+      try { body = JSON.parse(text); } catch (_) {}
+      const result = { ok: res.ok, status: res.status, ms: Date.now() - t0, version: body?.version || '', limits: body?.limits || null, usage: body?.usage || null };
+      // 联通成功 → 自动全局启用中继（所有路由 + /https:// 直连代理路径生效）
+      if (res.ok && !st.relayEnabled) {
+        await setSetting(env, 'relay_enabled', '1');
+        result.auto_enabled = true;
+      }
+      if (res.ok) {
+        try { await auditLog(env, 'relay.test.ok', `${base} ${result.ms}ms ${result.version}`); } catch (_) {}
+      }
+      return json(result);
+    } catch (e) {
+      return json({ ok: false, ms: Date.now() - t0, error: String(e?.message || e).slice(0, 200) });
+    }
+  }
+  if (url.pathname === '/admin/api/relay/usage' && request.method === 'GET') {
+    const st = await getSettings(env);
+    const base = normalizeRelayBase(st.relayUrl);
+    if (!base || !st.relaySecret) return json({ ok: false, error: '未配置中继' });
+    try {
+      const res = await fetch(new Request(base + '/_relay/health', { headers: { 'X-Relay-Key': st.relaySecret } }));
+      const body = await res.json().catch(() => null);
+      return json({ ok: res.ok, usage: body?.usage || null, limits: body?.limits || null, version: body?.version || '' });
+    } catch (e) {
+      return json({ ok: false, error: String(e?.message || e).slice(0, 200) });
     }
   }
 
@@ -3441,6 +3510,38 @@ async function getRoute(env, prefix) {
   return getRouteCached(env, prefix, '');
 }
 
+// ---- VPS 中继（v6.8.0）：后台配置 url/secret，联通后所有路由自动启用 ----
+// 行为 = 自动切换：CF 直连优先，直连失败（网络错误/401/403/451）才改走 VPS；
+// 中继限额拒绝（X-Relay-Denied）时静默回落直连，用户无感。
+function normalizeRelayBase(v) {
+  let u = String(v || '').trim();
+  if (!u) return '';
+  if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+  return u.replace(/\/+$/, '');
+}
+
+function getRelayCfg(settings) {
+  if (!settings.relayEnabled || !settings.relayUrl || !settings.relaySecret) return null;
+  const base = normalizeRelayBase(settings.relayUrl);
+  return base && settings.relaySecret ? { base, secret: settings.relaySecret } : null;
+}
+
+async function relayFetchHeaders(secret, targetUrl) {
+  const ts = Date.now();
+  const auth = await hmacHex(secret, ts + ':' + targetUrl);
+  return { 'X-Relay-Target': targetUrl, 'X-Relay-Ts': String(ts), 'X-Relay-Auth': auth };
+}
+
+// 回退审计节流：同一 key 5 分钟只记一条，防止源站故障期间 D1 写放大
+const fallbackLogAt = new Map();
+const FALLBACK_LOG_MS = 300000;
+function fallbackLogThrottled(key) {
+  const now = Date.now();
+  if (now - (fallbackLogAt.get(key) || 0) < FALLBACK_LOG_MS) return true;
+  fallbackLogAt.set(key, now);
+  return false;
+}
+
 async function resolveProxyTarget(request, env, url) {
   // 不对整条路径 decode：只对首段解码，其余保持原始编码，避免 %2F %23 %3F 被还原后改变上游路径
   const rawSegments = url.pathname.split('/').filter(Boolean);
@@ -3625,8 +3726,23 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
 
   const upgradeHeader = request.headers.get('Upgrade');
   if (upgradeHeader?.toLowerCase() === 'websocket') {
+    const relayWs = getRelayCfg(settings);
+    const wsFetchRelay = async (target, wsHeaders) => {
+      const rUrl = new URL(target.pathname + target.search, relayWs.base);
+      const h = new Headers(wsHeaders);
+      const signHeaders = await relayFetchHeaders(relayWs.secret, target.toString());
+      for (const [k, v] of Object.entries(signHeaders)) h.set(k, v);
+      return fetch(new Request(rUrl.toString(), { method: request.method, headers: h, redirect: 'manual' }));
+    };
     if (ipMode === 'forward') {
-      return fetch(upstreamUrls[0], request);
+      try {
+        return await fetch(upstreamUrls[0], request);
+      } catch (err) {
+        if (relayWs) {
+          try { return await wsFetchRelay(new URL(upstreamUrls[0]), request.headers); } catch (_) {}
+        }
+        throw err;
+      }
     }
     const wsHeaders = new Headers(request.headers);
     if (ipMode === 'disable') {
@@ -3636,7 +3752,14 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
       wsHeaders.delete('x-forwarded-for');
       wsHeaders.delete('forwarded');
     }
-    return fetch(upstreamUrls[0], new Request(upstreamUrls[0], { method: request.method, headers: wsHeaders }));
+    try {
+      return await fetch(upstreamUrls[0], new Request(upstreamUrls[0], { method: request.method, headers: wsHeaders }));
+    } catch (err) {
+      if (relayWs) {
+        try { return await wsFetchRelay(new URL(upstreamUrls[0]), wsHeaders); } catch (_) {}
+      }
+      throw err;
+    }
   }
 
   // Edge Cache：仅 GET、无 Range；图片在请求头携带凭据时不缓存，避免跨用户共享
@@ -3666,6 +3789,27 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
   const timeoutSignal = () =>
     (isPlaybackInfo || isPlaying || reqCategory === 'api') && typeof AbortSignal.timeout === 'function'
       ? AbortSignal.timeout(API_TIMEOUT_MS) : undefined;
+
+  // VPS 中继自动回退：直连失败（网络错误/401/403/451）时经中继重发同一请求
+  const relay = getRelayCfg(settings);
+  const canRelayFallback = !!relay;
+  let relayFallbackUsed = false;
+  const tryRelayFallback = async (urlForRelay) => {
+    if (!relay) return null;
+    const t = urlForRelay instanceof URL ? urlForRelay : new URL(urlForRelay);
+    const rUrl = new URL(t.pathname + t.search, relay.base);
+    const fbHeaders = buildUpstreamHeaders(request, t, { ipMode, compatMode });
+    for (const [k, v] of customHeaders) fbHeaders.set(k, v);
+    const fbSign = await relayFetchHeaders(relay.secret, t.toString());
+    for (const [k, v] of Object.entries(fbSign)) fbHeaders.set(k, v);
+    const fbRange = request.headers.get('Range');
+    if (fbRange) fbHeaders.set('Range', fbRange);
+    const fbInit = { method: request.method, headers: fbHeaders, redirect: compatMode ? 'follow' : 'manual' };
+    if (requestBody) fbInit.body = requestBody;
+    return fetch(new Request(rUrl.toString(), fbInit));
+  };
+  // 中继响应可用性：被限额拒绝（X-Relay-Denied）、源站仍拒绝(401/403/451)、5xx 都视为回退失败
+  const relayResponseUsable = (rb) => !!rb && !rb.headers.has('X-Relay-Denied') && ![401, 403, 451].includes(rb.status) && rb.status < 500;
 
   let finalResponse = null;
   let fallbackResponse = null;
@@ -3717,7 +3861,17 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
     if (sig) fetchInit.signal = sig;
 
     try {
-      const response = await fetch(new Request(upstreamUrl.toString(), fetchInit));
+      let response = await fetch(new Request(upstreamUrl.toString(), fetchInit));
+      // 中继回退：直连被源站拒绝（401/403/451，常见于 CF WAF 地区拦截）→ 自动改走 VPS 中继
+      if (canRelayFallback && [401, 403, 451].includes(response.status)) {
+        if (!fallbackLogThrottled((matchedPrefix || 'direct') + '|40x')) {
+          try { await auditLog(env, 'relay.fallback', `${matchedPrefix || 'direct'} ${request.method} ${pathname} direct_status=${response.status} colo=${request.cf?.colo || ''}`); } catch (_) {}
+        }
+        try {
+          const rb = await tryRelayFallback(upstreamUrl);
+          if (relayResponseUsable(rb)) { response = rb; relayFallbackUsed = true; }
+        } catch (_) { /* 回退失败则沿用原响应 */ }
+      }
       if (!compatMode && [502, 503, 504].includes(response.status)) {
         lastError = new Error(`HTTP ${response.status}`);
         hostDownUntil.set(upstreamUrl.host, Date.now() + HOST_DOWN_MS);
@@ -3730,6 +3884,22 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
       break;
     } catch (err) {
       lastError = err;
+      // 中继回退：直连网络错误/超时 → 自动改走 VPS 中继重发
+      if (canRelayFallback) {
+        if (!fallbackLogThrottled((matchedPrefix || 'direct') + '|err')) {
+          try { await auditLog(env, 'relay.fallback.err', `${matchedPrefix || 'direct'} ${request.method} ${pathname} direct_err=${(err && err.message) || String(err)} colo=${request.cf?.colo || ''}`); } catch (_) {}
+        }
+        try {
+          const rb = await tryRelayFallback(upstreamUrl);
+          if (relayResponseUsable(rb)) {
+            hostDownUntil.delete(upstreamUrl.host);
+            finalResponse = rb;
+            lastUpstreamUrl = upstreamUrl;
+            relayFallbackUsed = true;
+            break;
+          }
+        } catch (_) { /* 回退也失败 → 常规切线路流程 */ }
+      }
       hostDownUntil.set(upstreamUrl.host, Date.now() + HOST_DOWN_MS);
       continue;
     }
@@ -3786,6 +3956,7 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
   responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   responseHeaders.set('Access-Control-Allow-Headers', '*');
   applySecurityHeaders(responseHeaders);
+  if (relayFallbackUsed) responseHeaders.set('X-Relay-Fallback', '1');
 
   if (isPlaying || isPlaybackInfo) {
     responseHeaders.set('X-Served-By', request.cf?.colo || 'Unknown');
@@ -4676,6 +4847,17 @@ function buildAdminHtml(session, env) {
       <p class="form-hint">当前 Worker 入口：<code>${effectiveMainHost || '未配置'}</code>；用户域名：<code>${effectiveUserDomain || '未配置'}</code></p>
       <p class="form-hint">用户域名自动从现有变量推导，不绑定任何固定域名：默认 = <code>BASE_DOMAIN</code>；如果 <code>BASE_DOMAIN</code> 本身就是 Worker 入口（形如 <code>子域名.example.com</code>）且 <code>DNS_RECORD_NAME</code> 与那一级相同，会自动去掉它，得到 <code>example.com</code>，用户入口就是 <code>用户名.example.com</code>。需要时也可用 <code>USER_DOMAIN</code> 显式指定任意域名。</p>
     </div>
+    <div class="form-group" style="border-top:1px solid var(--border);padding-top:14px">
+      <label>VPS 中继（CF 直连失败时自动切换，联通后所有路由自动启用）</label>
+      <input id="setRelayUrl" placeholder="https://relay.example.com:2087" autocapitalize="off">
+      <input id="setRelaySecret" type="password" placeholder="留空表示不修改密钥" autocomplete="new-password" style="margin-top:8px">
+      <label class="checkbox-label" style="margin-top:8px"><input type="checkbox" id="setRelayEnabled"> 启用中继（默认勾选；点「测试」联通后自动开启）</label>
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+        <button class="btn btn-sm" onclick="testRelay()">测试连通</button>
+        <span class="form-hint" id="relayTestResult" style="margin:0"></span>
+      </div>
+      <p class="form-hint">中继行为：直连优先，直连失败（网络错误/401/403/451）才自动走 VPS；VPS 流量限额超限时自动回落直连，用户无感。覆盖所有用户路由和 <code>/https://源站:端口</code> 直连代理路径。</p>
+    </div>
     <div class="modal-actions">
       <button class="btn" onclick="runNow()">立即健康检查</button>
       <button class="btn" onclick="closeModal('modalSettings')">取消</button>
@@ -5449,7 +5631,50 @@ async function openSettings() {
     ? '通知渠道：' + [n.telegram ? 'Telegram' : '', n.webhook ? 'Webhook' : ''].filter(Boolean).join(' + ')
       + '（Token: ' + (n.tokenVar || '—') + '，Chat: ' + (n.chatVar || '—') + '）'
     : '尚未配置通知：请设置 TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID（兼容 TG_*），或 NOTIFY_WEBHOOK';
+  loadRelayCard();
   openModal('modalSettings');
+}
+
+// ===== VPS 中继配置卡（v6.8.0）=====
+async function loadRelayCard() {
+  try {
+    const r = await fetch('/admin/api/relay');
+    const d = await r.json();
+    document.getElementById('setRelayUrl').value = d.relay_url || '';
+    document.getElementById('setRelaySecret').value = '';
+    document.getElementById('setRelaySecret').placeholder = d.has_secret ? '已配置（' + d.secret_hint + '），留空表示不修改' : '留空表示不修改密钥';
+    document.getElementById('setRelayEnabled').checked = d.relay_enabled === '1';
+    document.getElementById('relayTestResult').textContent = d.active ? '当前状态：已启用' : '当前状态：未启用';
+  } catch (e) { /* 忽略 */ }
+}
+
+async function saveRelay() {
+  const body = {
+    relay_url: document.getElementById('setRelayUrl').value.trim(),
+    relay_enabled: document.getElementById('setRelayEnabled').checked ? '1' : '0'
+  };
+  const secret = document.getElementById('setRelaySecret').value.trim();
+  if (secret) body.relay_secret = secret;
+  const x = await postJson('/admin/api/relay', body);
+  if (!x.ok) { showToast(x.data.error || '保存失败'); return false; }
+  return true;
+}
+
+async function testRelay() {
+  const el = document.getElementById('relayTestResult');
+  el.textContent = '测试中...';
+  const saved = await saveRelay();
+  if (!saved) { el.textContent = '请先填写地址/密钥'; return; }
+  const x = await postJson('/admin/api/relay/test', {});
+  if (!x.ok) { showToast(x.data.error || '请求失败'); el.textContent = '测试失败'; return; }
+  const d = x.data;
+  if (d.ok) {
+    el.textContent = '联通 ' + d.ms + 'ms' + (d.version ? ' · ' + d.version : '') + (d.auto_enabled ? ' · 已自动启用中继' : '');
+    document.getElementById('setRelayEnabled').checked = true;
+    showToast('中继联通，所有路由已自动启用');
+  } else {
+    el.textContent = '失败' + (d.error ? '：' + d.error : '（HTTP ' + d.status + '）');
+  }
 }
 
 async function saveSettings() {
@@ -5461,6 +5686,7 @@ async function saveSettings() {
     domain_proxy_rules: document.getElementById('setRules').value.trim()
   });
   if (!x.ok) { showToast(x.data.error || '保存失败'); return; }
+  await saveRelay();
   closeModal('modalSettings');
   showToast('设置已保存');
 }
