@@ -29,7 +29,7 @@ import (
 	"time"
 )
 
-const VERSION = "emby-relay-0.2.0"
+const VERSION = "emby-relay-0.3.0"
 
 // 全部配置持久化在 JSON 文件里，由 Worker 后台在线下发修改，不用任何环境变量。
 type Config struct {
@@ -39,6 +39,11 @@ type Config struct {
 	KeyPEM              string `json:"key_pem,omitempty"`
 	VerifyUpstreamTLS   bool   `json:"verify_upstream_tls,omitempty"`
 	AllowPrivateTargets bool   `json:"allow_private_targets,omitempty"`
+	// v0.3.0 流量限额（0 = 不限制）
+	MonthlyLimitBytes uint64 `json:"monthly_limit_bytes,omitempty"` // 月度出站总上限
+	PerIPDailyBytes   uint64 `json:"per_ip_daily_limit_bytes,omitempty"`
+	PerIPMaxConns     int    `json:"per_ip_max_conns,omitempty"`
+	AllowCFOnly       bool   `json:"allow_cf_ips_only,omitempty"` // 只接受 Cloudflare 回源 IP + 回环
 }
 
 var (
@@ -93,29 +98,56 @@ type trafficStat struct {
 	Down uint64 `json:"down_bytes"`
 }
 
+// ipStat：单 IP 当日用量（跨日自动清零）
+type ipStat struct {
+	Date  string `json:"date"`
+	Req   uint64 `json:"req"`
+	Bytes uint64 `json:"bytes"` // 出站字节（计入配额）
+}
+
+// deniedStat：被限额/白名单拒绝的计数
+type deniedStat struct {
+	Quota uint64 `json:"quota"`
+	Conns uint64 `json:"conns"`
+	IP    uint64 `json:"ip"`
+}
+
 type statsFile struct {
-	Date  string                 `json:"date"`
-	Total trafficStat            `json:"total"`
-	Today trafficStat            `json:"today"`
-	Hosts map[string]trafficStat `json:"hosts"`
+	Date       string                 `json:"date"`
+	Total      trafficStat            `json:"total"`
+	Today      trafficStat            `json:"today"`
+	Hosts      map[string]trafficStat `json:"hosts"`
+	Month      string                 `json:"month,omitempty"`
+	MonthTotal trafficStat            `json:"month_total,omitempty"`
+	IPs        map[string]ipStat      `json:"ips,omitempty"`
+	Denied     deniedStat             `json:"denied,omitempty"`
 }
 
 var (
-	statsMu    sync.Mutex
-	statsTotal trafficStat
-	statsToday trafficStat
-	statsDate  string
-	statsHosts = map[string]trafficStat{}
-	statsPath  string
+	statsMu     sync.Mutex
+	statsTotal  trafficStat
+	statsToday  trafficStat
+	statsDate   string
+	statsHosts  = map[string]trafficStat{}
+	statsMonth  string
+	statsMTotal trafficStat
+	statsIPs    = map[string]ipStat{}
+	statsDenied deniedStat
+	statsPath   string
 )
 
 func shanghaiToday() string {
 	return time.Now().In(time.FixedZone("CST", 8*3600)).Format("2006-01-02")
 }
 
+func shanghaiMonth() string {
+	return time.Now().In(time.FixedZone("CST", 8*3600)).Format("2006-01")
+}
+
 func loadStats() {
 	statsPath = filepath.Join(filepath.Dir(cfgPath), "stats.json")
 	statsDate = shanghaiToday()
+	statsMonth = shanghaiMonth()
 	data, err := os.ReadFile(statsPath)
 	if err != nil {
 		return
@@ -125,18 +157,33 @@ func loadStats() {
 		return
 	}
 	statsTotal = f.Total
+	statsDenied = f.Denied
 	if f.Date == statsDate {
 		statsToday = f.Today
 		statsHosts = f.Hosts
 	}
+	if f.Month == statsMonth {
+		statsMTotal = f.MonthTotal
+	}
+	if f.IPs != nil {
+		for ip, v := range f.IPs {
+			if v.Date == statsDate {
+				statsIPs[ip] = v
+			}
+		}
+	}
 	if statsHosts == nil {
 		statsHosts = map[string]trafficStat{}
+	}
+	if statsIPs == nil {
+		statsIPs = map[string]ipStat{}
 	}
 }
 
 func saveStats() {
 	statsMu.Lock()
-	f := statsFile{Date: statsDate, Total: statsTotal, Today: statsToday, Hosts: statsHosts}
+	f := statsFile{Date: statsDate, Total: statsTotal, Today: statsToday, Hosts: statsHosts,
+		Month: statsMonth, MonthTotal: statsMTotal, IPs: statsIPs, Denied: statsDenied}
 	statsMu.Unlock()
 	out, err := json.Marshal(f)
 	if err != nil {
@@ -154,6 +201,75 @@ func statsRollDay() {
 		statsDate = today
 		statsToday = trafficStat{}
 		statsHosts = map[string]trafficStat{}
+		statsIPs = map[string]ipStat{}
+	}
+	month := shanghaiMonth()
+	if statsMonth != month {
+		statsMonth = month
+		statsMTotal = trafficStat{}
+	}
+}
+
+// ipBytes 当日该 IP 已用出站字节（不存在则 0）
+func ipBytes(ip string) uint64 {
+	statsMu.Lock()
+	defer statsMu.Unlock()
+	statsRollDay()
+	v, ok := statsIPs[ip]
+	if !ok || v.Date != statsDate {
+		return 0
+	}
+	return v.Bytes
+}
+
+// quotaAddDown：出站字节增量记账（计入月度配额 + 单 IP 日配额），实时累计
+func quotaAddDown(ip string, n uint64) {
+	statsMu.Lock()
+	defer statsMu.Unlock()
+	statsRollDay()
+	statsMTotal.Down += n
+	if ip == "" {
+		return
+	}
+	v := statsIPs[ip]
+	if v.Date != statsDate {
+		v = ipStat{Date: statsDate}
+	}
+	v.Bytes += n
+	statsIPs[ip] = v
+	// 防 map 无限膨胀：超过 5000 个 IP 时清掉非当日的
+	if len(statsIPs) > 5000 {
+		for k, x := range statsIPs {
+			if x.Date != statsDate {
+				delete(statsIPs, k)
+			}
+		}
+	}
+}
+
+// ipReqInc：单 IP 请求计数（每请求一次）
+func ipReqInc(ip string) {
+	statsMu.Lock()
+	defer statsMu.Unlock()
+	statsRollDay()
+	v := statsIPs[ip]
+	if v.Date != statsDate {
+		v = ipStat{Date: statsDate}
+	}
+	v.Req++
+	statsIPs[ip] = v
+}
+
+func deniedInc(kind string) {
+	statsMu.Lock()
+	defer statsMu.Unlock()
+	switch kind {
+	case "quota":
+		statsDenied.Quota++
+	case "conns":
+		statsDenied.Conns++
+	case "ip":
+		statsDenied.IP++
 	}
 }
 
@@ -167,6 +283,9 @@ func statsAdd(host string, req, up, down uint64) {
 	statsToday.Req += req
 	statsToday.Up += up
 	statsToday.Down += down
+	// 月度桶：Req/Up 在此累计；Down 由 quotaAddDown 实时累计（避免重复计数）
+	statsMTotal.Req += req
+	statsMTotal.Up += up
 	if host != "" {
 		h := statsHosts[host]
 		h.Req += req
@@ -176,7 +295,7 @@ func statsAdd(host string, req, up, down uint64) {
 	}
 }
 
-func statsSnapshot() (total, today trafficStat, hosts map[string]trafficStat, date string) {
+func statsSnapshot() (total, today, month trafficStat, hosts map[string]trafficStat, date, monthKey string, denied deniedStat) {
 	statsMu.Lock()
 	defer statsMu.Unlock()
 	statsRollDay()
@@ -184,7 +303,19 @@ func statsSnapshot() (total, today trafficStat, hosts map[string]trafficStat, da
 	for k, v := range statsHosts {
 		m[k] = v
 	}
-	return statsTotal, statsToday, m, statsDate
+	return statsTotal, statsToday, statsMTotal, m, statsDate, statsMonth, statsDenied
+}
+
+// ipStatsSnapshot：当日按 IP 用量的带锁拷贝
+func ipStatsSnapshot() map[string]ipStat {
+	statsMu.Lock()
+	defer statsMu.Unlock()
+	statsRollDay()
+	m := make(map[string]ipStat, len(statsIPs))
+	for k, v := range statsIPs {
+		m[k] = v
+	}
+	return m
 }
 
 // countBody：包装源站响应体，边读边累计 up 字节
@@ -203,9 +334,11 @@ func (c *countBody) Read(p []byte) (int, error) {
 func (c *countBody) Close() error { return c.rc.Close() }
 
 // countWriter：包装发往 Worker/客户端的响应，累计 down 字节（兼容 Flush/Hijack）
+// v0.3.0：每次 Write 实时计入月度配额 + 单 IP 日配额
 type countWriter struct {
 	http.ResponseWriter
 	n     uint64
+	ip    string
 	wrote bool
 }
 
@@ -220,7 +353,10 @@ func (c *countWriter) Write(p []byte) (int, error) {
 		c.wrote = true
 	}
 	n, err := c.ResponseWriter.Write(p)
-	atomic.AddUint64(&c.n, uint64(n))
+	if n > 0 {
+		atomic.AddUint64(&c.n, uint64(n))
+		quotaAddDown(c.ip, uint64(n))
+	}
 	return n, err
 }
 func (c *countWriter) Flush() {
@@ -264,6 +400,137 @@ func relayAuthOK(r *http.Request, target string) bool {
 func adminAuthOK(r *http.Request) bool {
 	secret := currentSecret()
 	return subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Relay-Key")), []byte(secret)) == 1
+}
+
+// ---- 单 IP 并发连接计数 ----
+var (
+	connsMu   sync.Mutex
+	connsByIP = map[string]int{}
+)
+
+func connsAcquire(ip string, max int) bool {
+	if max <= 0 {
+		return true
+	}
+	connsMu.Lock()
+	defer connsMu.Unlock()
+	if connsByIP[ip] >= max {
+		return false
+	}
+	connsByIP[ip]++
+	return true
+}
+
+func connsRelease(ip string) {
+	connsMu.Lock()
+	defer connsMu.Unlock()
+	if connsByIP[ip] > 0 {
+		connsByIP[ip]--
+	}
+	if len(connsByIP) > 10000 {
+		connsByIP = map[string]int{}
+	}
+}
+
+// ---- Cloudflare 回源 IP 白名单（v0.3.0）----
+// 内置 CF 官方网段兜底，启动后每 24h 从 cloudflare.com 刷新一次
+var (
+	cfMu      sync.RWMutex
+	cfIPNets  []*net.IPNet
+	cfUpdated time.Time
+)
+
+var CF_DEFAULT_CIDRS = []string{
+	"173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+	"141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+	"197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+	"104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+	"2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32",
+	"2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
+}
+
+func loadCFNets() {
+	nets := make([]*net.IPNet, 0, 32)
+	for _, cidr := range CF_DEFAULT_CIDRS {
+		if _, n, err := net.ParseCIDR(cidr); err == nil {
+			nets = append(nets, n)
+		}
+	}
+	cfMu.Lock()
+	cfIPNets = nets
+	cfUpdated = time.Now()
+	cfMu.Unlock()
+}
+
+func refreshCFNets() {
+	fetch := func(u string) []string {
+		cli := &http.Client{Timeout: 10 * time.Second}
+		resp, err := cli.Get(u)
+		if err != nil {
+			return nil
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
+		if err != nil {
+			return nil
+		}
+		var out []string
+		for _, line := range strings.Split(string(body), "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" && strings.Contains(line, "/") {
+				out = append(out, line)
+			}
+		}
+		return out
+	}
+	cidrs := append(fetch("https://www.cloudflare.com/ips-v4"), fetch("https://www.cloudflare.com/ips-v6")...)
+	if len(cidrs) < 10 { // 拉取失败保留现有列表
+		return
+	}
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		if _, n, err := net.ParseCIDR(cidr); err == nil {
+			nets = append(nets, n)
+		}
+	}
+	if len(nets) > 0 {
+		cfMu.Lock()
+		cfIPNets = nets
+		cfUpdated = time.Now()
+		cfMu.Unlock()
+		log.Printf("[cf-ips] refreshed: %d ranges", len(nets))
+	}
+}
+
+func isCFRemote(r *http.Request) bool {
+	host := r.RemoteAddr
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() { // 本机健康检查/测试放行
+		return true
+	}
+	cfMu.RLock()
+	nets := cfIPNets
+	cfMu.RUnlock()
+	for _, n := range nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func clientIP(r *http.Request) string {
+	host := r.RemoteAddr
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return host
 }
 
 // ---- 目标校验：禁止打回内网/元数据 ----
@@ -342,12 +609,6 @@ func buildProxy(target *url.URL) *httputil.ReverseProxy {
 		FlushInterval: -1,
 		Transport:     transport,
 		ModifyResponse: func(up *http.Response) error {
-			t0, _ := up.Request.Context().Value(tsCtxKey{}).(time.Time)
-			dur := int64(-1)
-			if !t0.IsZero() {
-				dur = time.Since(t0).Milliseconds()
-			}
-			log.Printf("[resp] %s %s status=%d size=%s dur=%dms", up.Request.Method, up.Request.URL.Path, up.StatusCode, up.Header.Get("Content-Length"), dur)
 			// 流量统计：包装源站响应体，边读边计 up 字节
 			if up.Body != nil {
 				up.Body = &countBody{rc: up.Body, host: up.Request.URL.Host}
@@ -372,6 +633,15 @@ type tsCtxKey struct{}
 func relayHandler(w http.ResponseWriter, r *http.Request) {
 	received := time.Now()
 	r = r.WithContext(context.WithValue(r.Context(), tsCtxKey{}, received))
+	c := currentConfig()
+	ip := clientIP(r)
+
+	// 闸 1：CF 回源 IP 白名单（回环始终放行）
+	if c.AllowCFOnly && !isCFRemote(r) {
+		deniedInc("ip")
+		http.Error(w, "cf ips only", http.StatusForbidden)
+		return
+	}
 	targetStr := r.Header.Get("X-Relay-Target")
 	if targetStr == "" {
 		http.Error(w, "missing X-Relay-Target", http.StatusBadRequest)
@@ -386,14 +656,39 @@ func relayHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid target", http.StatusBadRequest)
 		return
 	}
-	c := currentConfig()
 	if !c.AllowPrivateTargets && isPrivateIP(u.Hostname()) {
 		http.Error(w, "private target not allowed", http.StatusForbidden)
 		return
 	}
-	log.Printf("[relay] %s %s -> %s", r.Method, r.URL.Path, u.Host)
+	// 闸 2：月度出站总上限
+	if c.MonthlyLimitBytes > 0 {
+		_, _, month, _, _, _, _ := statsSnapshot()
+		if month.Down >= c.MonthlyLimitBytes {
+			deniedInc("quota")
+			w.Header().Set("X-Relay-Denied", "quota")
+			http.Error(w, "relay monthly quota exhausted", http.StatusServiceUnavailable)
+			return
+		}
+	}
+	// 闸 3：单 IP 每日出站上限
+	if c.PerIPDailyBytes > 0 && ipBytes(ip) >= c.PerIPDailyBytes {
+		deniedInc("quota")
+		w.Header().Set("X-Relay-Denied", "quota")
+		http.Error(w, "relay per-ip daily quota exhausted", http.StatusServiceUnavailable)
+		return
+	}
+	// 闸 4：单 IP 并发连接数
+	if !connsAcquire(ip, c.PerIPMaxConns) {
+		deniedInc("conns")
+		w.Header().Set("X-Relay-Denied", "concurrency")
+		http.Error(w, "too many concurrent connections", http.StatusTooManyRequests)
+		return
+	}
+	defer connsRelease(ip)
+
 	statsAdd(u.Host, 1, 0, 0)
-	cw := &countWriter{ResponseWriter: w}
+	ipReqInc(ip)
+	cw := &countWriter{ResponseWriter: w, ip: ip}
 	buildProxy(u).ServeHTTP(cw, r)
 	if n := atomic.LoadUint64(&cw.n); n > 0 {
 		statsAdd(u.Host, 0, 0, n)
@@ -404,13 +699,28 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusForbidden)
 		return
 	}
+	c := currentConfig()
+	_, _, month, _, _, monthKey, denied := statsSnapshot()
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(map[string]any{
 		"ok":       true,
 		"version":  VERSION,
 		"uptime_s": int(time.Since(startAt).Seconds()),
-		"port":     currentConfig().Port,
-		"tls":      currentConfig().CertPEM != "",
+		"port":     c.Port,
+		"tls":      c.CertPEM != "",
+		"limits": map[string]any{
+			"monthly_limit_bytes": c.MonthlyLimitBytes,
+			"per_ip_daily_bytes":  c.PerIPDailyBytes,
+			"per_ip_max_conns":    c.PerIPMaxConns,
+			"allow_cf_only":       c.AllowCFOnly,
+		},
+		"usage": map[string]any{
+			"month":          monthKey,
+			"month_down":     month.Down,
+			"month_up":       month.Up,
+			"month_requests": month.Req,
+			"denied":         denied,
+		},
 	})
 }
 
@@ -419,7 +729,7 @@ func statsHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusForbidden)
 		return
 	}
-	total, today, hosts, date := statsSnapshot()
+	total, today, month, hosts, date, monthKey, denied := statsSnapshot()
 	type hostRow struct {
 		Host      string `json:"host"`
 		Req       uint64 `json:"req"`
@@ -434,6 +744,20 @@ func statsHandler(w http.ResponseWriter, r *http.Request) {
 	if len(rows) > 20 {
 		rows = rows[:20]
 	}
+	// Top IP（当日用量排序，最多 20 个）
+	type ipRow struct {
+		IP    string `json:"ip"`
+		Req   uint64 `json:"req"`
+		Bytes uint64 `json:"bytes"`
+	}
+	ipRows := make([]ipRow, 0, len(ipStatsSnapshot()))
+	for ip, v := range ipStatsSnapshot() {
+		ipRows = append(ipRows, ipRow{IP: ip, Req: v.Req, Bytes: v.Bytes})
+	}
+	sort.Slice(ipRows, func(i, j int) bool { return ipRows[i].Bytes > ipRows[j].Bytes })
+	if len(ipRows) > 20 {
+		ipRows = ipRows[:20]
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(map[string]any{
 		"ok":       true,
@@ -443,6 +767,14 @@ func statsHandler(w http.ResponseWriter, r *http.Request) {
 		"total":    total,
 		"today":    today,
 		"hosts":    rows,
+		"month": map[string]any{
+			"key":  monthKey,
+			"up":   month.Up,
+			"down": month.Down,
+			"req":  month.Req,
+		},
+		"top_ips": ipRows,
+		"denied":  denied,
 	})
 }
 
@@ -535,9 +867,16 @@ func main() {
 	mux.HandleFunc("/", relayHandler)
 
 	loadStats()
-	go func() { // 每分钟落盘，重启不丢统计
+	loadCFNets()
+	go refreshCFNets() // 拉取失败会保留内置列表；成功后每 24h 再刷
+	go func() {        // 每分钟落盘，重启不丢统计；CF 网段每日刷新
 		for range time.Tick(60 * time.Second) {
 			saveStats()
+		}
+	}()
+	go func() {
+		for range time.Tick(24 * time.Hour) {
+			refreshCFNets()
 		}
 	}()
 
@@ -571,6 +910,7 @@ func main() {
 		<-sig
 		log.Printf("shutting down")
 		srv.Shutdown(context.Background())
+		saveStats() // 停机前落盘，统计不丢
 	}()
 
 	var errServe error

@@ -25,15 +25,41 @@ curl -fsSL "$BASE_URL/bin/emby-relay-linux-$ARCH" -o /tmp/emby-relay.dl
 chmod 755 /tmp/emby-relay.dl
 
 echo "==> 2/4 生成引导密钥并写入初始配置"
-# 幂等：已有配置则保留（避免覆盖后台已推送的正式密钥）
+# 幂等：已有配置则保留密钥/证书，仅补充缺失的限额字段（v0.3.0）
+LIMITS='"monthly_limit_bytes": 9895604649984, "per_ip_daily_limit_bytes": 32212254720, "per_ip_max_conns": 8, "allow_cf_ips_only": true'
 if [ -s "$CFG" ] && grep -q '"secret"' "$CFG" 2>/dev/null; then
-  echo "    检测到已有配置 $CFG，保留不动"
+  echo "    检测到已有配置 $CFG，保留密钥/证书"
   mkdir -p /etc/emby-relay
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$CFG" <<PYEOF
+import json, sys
+p = sys.argv[1]
+c = json.load(open(p))
+changed = False
+defaults = {
+    'monthly_limit_bytes': 9895604649984,      # 9TB/月出站上限（0=不限）
+    'per_ip_daily_limit_bytes': 32212254720,   # 单 IP 30GB/天
+    'per_ip_max_conns': 8,                     # 单 IP 并发连接
+    'allow_cf_ips_only': True,                 # 只接受 Cloudflare 回源 IP + 本机
+}
+for k, v in defaults.items():
+    if k not in c:
+        c[k] = v
+        changed = True
+if changed:
+    json.dump(c, open(p, 'w'), indent=2)
+    print('    已补充限额字段（月 9TB / 单IP日 30GB / 并发 8 / CF 白名单）')
+else:
+    print('    限额字段已存在，不改动')
+PYEOF
+  else
+    echo "    （无 python3，跳过限额字段补充——如需限额请手动编辑 $CFG）"
+  fi
 else
   BOOT_SECRET="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' | cut -c1-32)"
   mkdir -p /etc/emby-relay
   cat > "$CFG" <<EOF
-{"port": $RELAY_PORT, "secret": "$BOOT_SECRET", "verify_upstream_tls": true}
+{"port": $RELAY_PORT, "secret": "$BOOT_SECRET", "verify_upstream_tls": true, $LIMITS}
 EOF
   chmod 600 "$CFG"
 fi
