@@ -1,4 +1,4 @@
-const CURRENT_VERSION = 'v6.8.1-multi';
+const CURRENT_VERSION = 'v6.8.2-multi';
 
 // 内置优选域名
 const DEFAULT_OPTIMIZED_DOMAINS = [
@@ -657,28 +657,24 @@ async function buildDailyReport(env, dateKey) {
   try { await flushHourlyStats(env); } catch (_) {}
   const workerHosts = await getWorkerHosts(env);
 
-  // 主口径：CF 账号分析（整个账号所有域名，带宽 = 边缘真正发给客户端的字节）。
-  // 用户子域名是灰云 CNAME 到优选域名，zone 级统计看不到它们，只有账号级能覆盖全站。
+  // 主口径：CF 账号分析（整个域名 = BASE_DOMAIN 及其全部子域名，带宽 = 边缘真正发给客户端的字节）。
+  // D1 自记口径已废弃：流量/请求数只认 CF，CF 不可用就不显示数字，绝不用 D1 兜底。
   const acc = await cfGetAccountSummary(env, key, workerHosts);
   const accOk = !acc.error;
-  const d1 = await getD1Stats(env, key);
-  // 账号分析不可用时退回 Zone 级（仅主域名）
+  // 账号分析不可用时退回 Zone 级（仍是 CF 口径）
   const cf = accOk ? { error: '' } : await cfGetZoneSummary(env, key, workerHosts);
   const cfOk = !accOk && !cf.error;
 
-  const requests = accOk ? (Number(acc.requests) || 0) : (cfOk ? (Number(cf.requests) || 0) : (d1.requests || 0));
-  const traffic = accOk ? (Number(acc.bytes) || 0) : (cfOk ? (Number(cf.bytes) || 0) : (d1.traffic || 0));
+  const requests = accOk ? (Number(acc.requests) || 0) : (cfOk ? (Number(cf.requests) || 0) : null);
+  const traffic = accOk ? (Number(acc.bytes) || 0) : (cfOk ? (Number(cf.bytes) || 0) : null);
   const visits = accOk ? (Number(acc.visits) || 0) : (cfOk ? (Number(cf.visits) || 0) : 0);
 
-  // 近 7 日同样用账号分析；不可用时退回 D1（声明长度口径）
+  // 近 7 日同样只认 CF；不可用时该段整体不显示
   let daily = [];
   if (accOk) {
     const s = await cfGetAccountDailySeries(env, 7, workerHosts);
     if (!s.error && Array.isArray(s.series)) daily = s.series;
-  }
-  if (!daily.some(d => Number(d.requests) > 0)) daily = await getD1DailySeries(env, 7);
-  // D1 也没有数据（刚部署）时退回 Zone 级
-  if (!daily.some(d => Number(d.requests) > 0)) {
+  } else if (cfOk) {
     const zs = await cfGetZoneDailySeries(env, 7);
     if (!zs.error && Array.isArray(zs.series)) daily = zs.series;
   }
@@ -686,11 +682,12 @@ async function buildDailyReport(env, dateKey) {
   const lines = [];
   lines.push('📊 <b>Emby Proxy 日报</b>');
   const host = getStatsHost(env);
-  lines.push('<code>全站（' + tgEscape(host ? host + ' + 用户子域名' : '含用户子域名') + '）</code>');
+  const dom = getUserDomain(env) || host || '';
+  lines.push('<code>整个域名（' + tgEscape(dom || '全站') + '）</code>');
   lines.push('<code>' + tgEscape(key) + '</code>');
   lines.push('');
-  lines.push('请求数：<b>' + requests + '</b>');
-  lines.push('出站流量：<b>' + formatBytes(traffic) + '</b>');
+  lines.push('请求数：' + (requests == null ? '（CF 数据不可用）' : '<b>' + requests + '</b>'));
+  lines.push('出站流量：' + (traffic == null ? '（CF 数据不可用）' : '<b>' + formatBytes(traffic) + '</b>'));
   if (accOk || cfOk) lines.push('CF 访问量：<b>' + visits + '</b>');
   // 主域名单列一行：CF 后台看到的是这个数，和上面的全站合计不是一个口径
   if (host) {
@@ -714,7 +711,7 @@ async function buildDailyReport(env, dateKey) {
 
   if (!accOk) {
     lines.push('');
-    lines.push('<i>账号分析不可用，已退回 ' + (cfOk ? 'Zone 统计' : 'D1 统计') + '：' + tgEscape(String(acc.error).slice(0, 160)) + '</i>');
+    lines.push('<i>账号分析不可用，已退回 ' + (cfOk ? 'Zone 统计' : '（无 CF 数据）') + '：' + tgEscape(String(acc.error).slice(0, 160)) + '</i>');
   } else if (acc.hostMatched === false) {
     lines.push('');
     lines.push('<i>账号分析中未匹配到 Worker 域名，当前为账号总量</i>');
@@ -2116,35 +2113,45 @@ async function handleStatsRequest(env, url, opts = {}) {
   try { await flushHourlyStats(env); } catch (_) {}
 
   const d1 = await getD1Stats(env, dateKey, owner);
-  // 用户只展示自己的 D1 数据，不查询整个账号，避免越权看到其他用户/站点数据
-  const workerHosts = owner ? null : await getWorkerHosts(env);
-  // 主口径：CF 账号分析（覆盖 fd + 所有用户子域名，带宽为真实出站字节）
-  const acc = owner ? { error: '' } : await cfGetAccountSummary(env, dateKey, workerHosts);
-  const accOk = !owner && !acc.error;
-  // 账号分析不可用时退回 Zone 级（仅主域名）
-  const cf = owner || accOk ? { error: '' } : await cfGetZoneSummary(env, dateKey);
+  // 流量/请求数一律以 CF 账号分析为准（D1 自记口径已废弃，不再作为显示来源或兜底）。
+  // 管理员看整个域名（BASE_DOMAIN 及其全部子域名）；普通用户只看自己的入口子域名。
+  let hostSet = null;
+  if (owner) {
+    const userDomain = getUserDomain(env);
+    let sub = '';
+    try {
+      const row = await env.DB.prepare('SELECT subdomain, username FROM users WHERE username = ?').bind(owner).first();
+      sub = String(row?.subdomain || row?.username || owner).trim().toLowerCase();
+    } catch (_) { sub = owner; }
+    if (userDomain && sub) hostSet = new Set([sub + '.' + userDomain]);
+  } else {
+    hostSet = await getWorkerHosts(env);
+  }
+  // 拿不到查询范围（如未配置用户域名）时不查询，避免退化成整个账号造成越权
+  const acc = hostSet ? await cfGetAccountSummary(env, dateKey, hostSet) : { error: '未配置统计域名范围' };
+  const accOk = !acc.error;
+  // 账号分析不可用时退回 Zone 级（仅主域名，仍是 CF 口径；不再退回 D1）
+  const cf = accOk || owner ? { error: '' } : await cfGetZoneSummary(env, dateKey);
   const worker = owner ? { error: '' } : await cfGetWorkerSummary(env, dateKey);
 
-  const cfOk = !owner && !accOk && !cf.error;
-  const statsSource = owner ? 'd1' : (accOk ? 'account' : (cfOk ? 'zone' : 'd1'));
-  const trafficBytes = accOk ? (Number(acc.bytes) || 0) : (cfOk ? (Number(cf.bytes) || 0) : (d1.traffic || 0));
-  const requests = accOk ? (Number(acc.requests) || 0) : (cfOk ? (Number(cf.requests) || 0) : (d1.requests || 0));
+  const cfOk = !accOk && !owner && !cf.error;
+  const statsSource = accOk ? 'account' : (cfOk ? 'zone' : 'unavailable');
+  const trafficBytes = accOk ? (Number(acc.bytes) || 0) : (cfOk ? (Number(cf.bytes) || 0) : null);
+  const requests = accOk ? (Number(acc.requests) || 0) : (cfOk ? (Number(cf.requests) || 0) : null);
   const visits = accOk ? (Number(acc.visits) || 0) : (cfOk ? (Number(cf.visits) || 0) : null);
 
   const hourly = accOk ? acc.hourly : (cfOk ? cf.hourly : null);
   const hourlySeries = Array.from({ length: 24 }, (_, h) => ({
     label: String(h).padStart(2, '0') + ':00',
-    total: hourly ? (hourly[h] || 0) : (d1.hourly[h] || 0),
-    d1: d1.hourly[h] || 0,
-    cf: hourly ? hourly[h] : 0,
+    total: hourly ? (hourly[h] || 0) : 0,
+    cf: hourly ? (hourly[h] || 0) : 0,
   }));
 
   let dailySeries = [];
   if (accOk) {
-    const s = await cfGetAccountDailySeries(env, 7, workerHosts);
+    const s = await cfGetAccountDailySeries(env, 7, hostSet);
     if (!s.error && Array.isArray(s.series)) dailySeries = s.series;
   }
-  if (!dailySeries.some(d => Number(d.requests) > 0)) dailySeries = await getD1DailySeries(env, 7, owner);
   const zoneInfo = owner ? { zoneId: '', zoneName: '', from: '' } : await resolveZoneInfo(env);
   const tgReady = Boolean(getTelegramToken(env) && getTelegramChatId(env));
 
@@ -2155,7 +2162,7 @@ async function handleStatsRequest(env, url, opts = {}) {
       scope: owner ? 'user' : 'global',
       owner,
       todayRequests: requests,
-      todayTraffic: formatBytes(trafficBytes),
+      todayTraffic: trafficBytes == null ? null : formatBytes(trafficBytes),
       todayTrafficBytes: trafficBytes,
       todayVisits: visits,
       plays: d1.plays,
@@ -2172,10 +2179,10 @@ async function handleStatsRequest(env, url, opts = {}) {
       dailySeries,
       topRoutes: d1.routes,
       statsSource,
-      cfStatus: owner ? 'D1 统计（用户维度）'
-        : (accOk ? (acc.hostMatched === false ? 'CF 账号分析（账号总量）' : 'CF 账号分析（全站）')
-          : (cfOk ? (cf.hostMatched ? 'CF Zone 统计' : 'CF Zone 统计（全 Zone）') : 'D1 统计（账号分析不可用）')),
-      cfError: owner ? '' : (accOk || cfOk ? '' : (acc.error || cf.error)),
+      cfStatus: owner ? (accOk ? 'CF 账号分析（我的域名）' : 'CF 数据不可用')
+        : (accOk ? (acc.hostMatched === false ? 'CF 账号分析（账号总量）' : 'CF 账号分析（整个域名）')
+          : (cfOk ? 'CF Zone 统计' : 'CF 数据不可用')),
+      cfError: owner ? (accOk ? '' : (acc.error || '')) : (accOk || cfOk ? '' : (acc.error || cf.error)),
       envInfo: {
         baseDomain: getBaseDomain(env),
         statsHost: getStatsHost(env),
@@ -2186,7 +2193,7 @@ async function handleStatsRequest(env, url, opts = {}) {
         telegramTokenVar: getTelegramToken(env) ? '已读取' : '未读取',
         telegramChatVar: getTelegramChatId(env) ? '已读取' : '未读取',
       },
-      source: owner ? 'D1' : (accOk ? 'CF 账号分析' : (cfOk ? 'CF Zone' : 'D1')),
+      source: accOk ? 'CF 账号分析' : (cfOk ? 'CF Zone' : 'CF 数据不可用'),
       lastUpdated: new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }),
     },
   });
@@ -5316,16 +5323,16 @@ async function loadStats() {
     document.getElementById('stats-body').style.display = 'block';
     const data = d.data || {};
     const isUserScope = data.scope === 'user';
-    const src = data.statsSource || 'd1';
-    const srcLabel = src === 'account' ? 'CF 账号分析（全站）' : (src === 'zone' ? 'CF Zone Analytics（仅主域名）' : 'D1（声明长度口径）');
-    document.getElementById('st-req').textContent = data.todayRequests == null ? 0 : data.todayRequests;
-    document.getElementById('st-req-sub').textContent = '来源: ' + (isUserScope ? '我的转发请求（D1）' : srcLabel);
-    document.getElementById('st-traffic').textContent = data.todayTraffic || '0 B';
-    document.getElementById('st-traffic-sub').textContent = '来源: ' + (isUserScope ? '我的出站流量（D1）' : (src === 'account' ? '真实出站流量（CF 账号分析）' : (src === 'zone' ? 'CF edgeResponseBytes（仅主域名）' : 'D1 出站流量（声明长度）')));
+    const src = data.statsSource || 'unavailable';
+    const srcLabel = src === 'account' ? 'CF 账号分析（整个域名）' : (src === 'zone' ? 'CF Zone Analytics（仅主域名）' : 'CF 数据不可用');
+    document.getElementById('st-req').textContent = data.todayRequests == null ? '—' : data.todayRequests;
+    document.getElementById('st-req-sub').textContent = '来源: ' + (isUserScope ? (src === 'account' ? 'CF 账号分析（我的域名）' : srcLabel) : srcLabel);
+    document.getElementById('st-traffic').textContent = data.todayTraffic || '—';
+    document.getElementById('st-traffic-sub').textContent = '来源: ' + (isUserScope ? (src === 'account' ? '真实出站流量（CF 账号分析·我的域名）' : 'CF 数据不可用') : (src === 'account' ? '真实出站流量（CF 账号分析·整个域名）' : (src === 'zone' ? 'CF edgeResponseBytes（仅主域名）' : 'CF 数据不可用')));
     document.getElementById('st-uv').textContent = data.todayVisits == null ? '—' : data.todayVisits;
     document.getElementById('st-uv-sub').textContent = isUserScope ? '用户维度不统计独立访问' : '来源: CF 独立访问（全站）';
     var chip = document.getElementById('statsChip');
-    if (chip) chip.textContent = isUserScope ? 'D1' : (data.cfStatus || 'STATS');
+    if (chip) chip.textContent = data.cfStatus || (isUserScope ? 'CF' : 'STATS');
     const envInfo = data.envInfo || {};
     document.getElementById('st-updated').textContent = '更新时间 ' + (data.lastUpdated || '')
       + ' · ' + (data.cfStatus || '')
