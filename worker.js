@@ -1,4 +1,4 @@
-const CURRENT_VERSION = 'v6.8.0-multi';
+const CURRENT_VERSION = 'v6.8.1-multi';
 
 // 内置优选域名
 const DEFAULT_OPTIMIZED_DOMAINS = [
@@ -260,6 +260,22 @@ async function getWorkerHosts(env) {
   return set;
 }
 
+// hostSet 匹配器：users 表只覆盖注册用户，实际还有大量仅配了 DNS 的子域名（不在任何表里，
+// 曾导致日报漏算大块流量）。统计口径 = 整个域名（userDomain 及其全部子域名），
+// 外加主入口与 STATS_HOSTS。域名维度可能带端口（如 fd.dirige.de5.net:443），比较前先剥掉。
+function makeHostMatcher(env, hostSet) {
+  const userDomain = String(getUserDomain(env) || '').toLowerCase();
+  const main = String(getStatsHost(env) || '').toLowerCase();
+  return (raw) => {
+    const h = String(raw || '').toLowerCase().replace(/:\d+$/, '');
+    if (!h) return false;
+    if (hostSet && hostSet.has(h)) return true;
+    if (main && h === main) return true;
+    if (userDomain && (h === userDomain || h.endsWith('.' + userDomain))) return true;
+    return false;
+  };
+}
+
 // hostSet 为空时只统计主入口域名（后台仪表盘用）；传入域名集合时统计全站（日报用）。
 async function cfGetZoneSummary(env, dateKey, hostSet = null) {
   const token = getCFApiToken(env);
@@ -284,11 +300,10 @@ async function cfGetZoneSummary(env, dateKey, hostSet = null) {
   if (!zone?.series) return { error: 'CF 未返回数据（Token 可能缺少 Analytics:Read 权限）' };
 
   const statsHost = getStatsHost(env);
-  const wanted = hostSet && hostSet.size ? hostSet : (statsHost ? new Set([statsHost]) : null);
+  const wanted = hostSet && hostSet.size ? makeHostMatcher(env, hostSet) : (statsHost ? makeHostMatcher(env, new Set([statsHost])) : null);
   const matches = (item) => {
     if (!wanted) return true;
-    const h = String(item?.dimensions?.clientRequestHTTPHost || '').toLowerCase();
-    return wanted.has(h);
+    return wanted(item?.dimensions?.clientRequestHTTPHost);
   };
   const rows = hostDim ? zone.series.filter(matches) : zone.series;
 
@@ -436,9 +451,9 @@ async function cfGetAccountSummary(env, dateKey, hostSet = null) {
   }
 
   const statsHost = getStatsHost(env);
-  const wanted = hostSet && hostSet.size ? hostSet : null;
+  const wanted = hostSet && hostSet.size ? makeHostMatcher(env, hostSet) : null;
   let hostMatched = Boolean(hostDim && wanted);
-  let rows = hostDim && wanted ? account.series.filter(it => wanted.has(String(it?.dimensions?.clientRequestHTTPHost || '').toLowerCase())) : account.series;
+  let rows = hostDim && wanted ? account.series.filter(it => wanted(it?.dimensions?.clientRequestHTTPHost)) : account.series;
   if (hostDim && wanted && rows.length === 0) {
     hostMatched = false;
     rows = account.series;
@@ -471,7 +486,7 @@ async function cfGetAccountSummary(env, dateKey, hostSet = null) {
   const total = sumRows(rows);
   // 主入口单独一份，日报里说明「CF 后台 fd 那个数」
   const mainRows = hostDim && statsHost
-    ? account.series.filter(it => String(it?.dimensions?.clientRequestHTTPHost || '').toLowerCase() === statsHost)
+    ? account.series.filter(it => String(it?.dimensions?.clientRequestHTTPHost || '').toLowerCase().replace(/:\d+$/, '') === statsHost)
     : rows;
   const main = sumRows(mainRows);
 
@@ -517,11 +532,11 @@ async function cfGetAccountDailySeries(env, days = 7, hostSet = null) {
   }
   if (!Array.isArray(rows)) return { error: '账号分析未返回数据' };
 
-  const wanted = hostSet && hostSet.size ? hostSet : null;
+  const wanted = hostSet && hostSet.size ? makeHostMatcher(env, hostSet) : null;
   const map = new Map();
   for (const item of rows) {
     const h = String(item?.dimensions?.clientRequestHTTPHost || '').toLowerCase();
-    if (wanted && h && !wanted.has(h)) continue;
+    if (wanted && h && !wanted(h)) continue;
     const raw = item?.dimensions?.datetimeHour;
     if (!raw) continue;
     const { dateKey } = getShanghaiParts(new Date(raw).getTime());
@@ -3717,10 +3732,21 @@ async function proxyDirectUrl(request, env, ctx, upstreamUrls, opts = {}) {
   // 现在只对小响应（≤ 1 MB，图片/JSON/字幕等）用 content-length 快速路径，
   // 视频/分段等大响应一律走计数流，客户端断开时按已发送字节结算。
   const SMALL_BODY_BYTES = 1024 * 1024;
+  // 大流（>16MB）改用 FixedLengthStream 原生透传：JS 计数流逐块 read+enqueue 实测约 32µs/KB，
+  // 62MB 就会烧光 ~2s CPU 限额（exceededCpu，客户端表现为播放中断）。原生透传不占 JS CPU，
+  // 完整传完按 content-length 精确记账；客户端中断则记 0（宁少不多）。1MB~16MB 仍走计数流精确记账。
+  const BIG_BODY_BYTES = 16 * 1024 * 1024;
   const meterBody = (response) => {
     if (!response.body) { recordStats(0); return null; }
     const cl = parseInt(response.headers.get('content-length') || '', 10);
     if (Number.isFinite(cl) && cl >= 0 && cl <= SMALL_BODY_BYTES) { recordStats(cl); return response.body; }
+    if (Number.isFinite(cl) && cl > BIG_BODY_BYTES) {
+      try {
+        const fls = new FixedLengthStream(cl);
+        response.body.pipeTo(fls.writable).then(() => recordStats(cl), () => recordStats(0));
+        return fls.readable;
+      } catch (_) { /* FixedLengthStream 异常时退回计数流 */ }
+    }
     return countingBody(response.body, recordStats);
   };
 
