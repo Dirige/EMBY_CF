@@ -145,6 +145,15 @@
 
 - [DEPLOY.md](DEPLOY.md)：从零部署、GitHub Actions、变量、权限、Cron、Telegram、用户系统、备份与排错。
 
+## 排障经验
+
+- **播放起播慢 / 播几秒就卡缓冲，海报与登录一切正常**：
+先想到"Range 请求编码协商被破坏"。播放器带 `Accept-Encoding: gzip` 时，个别上游（或其前置反代）会把响应压缩，Range/断点续传的语义就乱了（数据偏移对不上），表现为能登录能扫库、播放时反复"等待缓冲"，甚至拖进度条失败。
+  - 修法：给对应路由的「自定义请求头」填 `Accept-Encoding: identity`，强制上游返回未压缩字节，立即生效。
+  - 也可以在 worker 代码层对 streaming/Range 请求转发前强制 `Accept-Encoding: identity`，参考官方公益服的最小自建反代（很多公益服文档要求反代对 Range 请求这样做）。
+- **VPS 中继"并发连接过多"提示**：中继的单 IP 并发限制按 TCP 来源 IP 计数；经 Cloudflare 回源时所有用户共享 CF 出口 IP，额度容易共享耗尽。出现该提示优先调大 `per_ip_max_conns`（`/etc/emby-relay/config.json` + 重启服务）。
+- **播放器报"速度慢但重开就好"**：先看中继统计的 `denied.conns` 是否持续增长（并发闸拒绝新 Range 连接导致播放器停顿重试），再查单流限速/线路丢包。
+
 ## 声明 · 许可
 
 本项目仅用于学习、研究和自有服务代理测试。请遵守当地法律法规、Cloudflare 服务条款和上游服务条款，使用产生的一切后果由使用者自行承担。
