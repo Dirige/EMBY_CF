@@ -929,7 +929,7 @@ var process_default = _process;
 globalThis.process = process_default;
 
 // worker.js
-var CURRENT_VERSION = "v6.8.4-multi";
+var CURRENT_VERSION = "v6.8.5-multi";
 var DEFAULT_OPTIMIZED_DOMAINS = [
   { domain: "youxuan.cf.090227.xyz", name: "CF\u4F18\u9009-090227", isBuiltin: true },
   { domain: "cf.877774.xyz", name: "\u79CB\u540D\u5C71\u4F18\u9009", isBuiltin: true },
@@ -2494,7 +2494,7 @@ async function initDatabase(env2) {
   }
 }
 __name(initDatabase, "initDatabase");
-var SCHEMA_ID = "multi-v6.8.3";
+var SCHEMA_ID = "multi-v6.8.5";
 async function initDatabaseSchema(env2) {
   try {
     const marker = await env2.DB.prepare(`SELECT value FROM settings WHERE key = 'schema_init'`).first();
@@ -2504,6 +2504,7 @@ async function initDatabaseSchema(env2) {
   await env2.DB.batch([
     env2.DB.prepare(`CREATE TABLE IF NOT EXISTS routes (
       prefix TEXT PRIMARY KEY, target TEXT NOT NULL,
+      stream_target TEXT DEFAULT '',
       remark TEXT DEFAULT '', last_play TEXT DEFAULT '',
       cache_img TEXT DEFAULT 'on', compat_mode TEXT DEFAULT 'off',
       ip_mode TEXT DEFAULT 'forward',
@@ -2578,6 +2579,7 @@ async function initDatabaseSchema(env2) {
       owner TEXT NOT NULL,
       prefix TEXT NOT NULL,
       target TEXT NOT NULL,
+      stream_target TEXT NOT NULL DEFAULT '',
       remark TEXT DEFAULT '',
       last_play TEXT DEFAULT '',
       cache_img TEXT DEFAULT 'on',
@@ -2603,6 +2605,14 @@ async function initDatabaseSchema(env2) {
   ]);
   try {
     await env2.DB.prepare(`ALTER TABLE routes ADD COLUMN ip_mode TEXT DEFAULT 'forward'`).run();
+  } catch (e) {
+  }
+  try {
+    await env2.DB.prepare(`ALTER TABLE routes ADD COLUMN stream_target TEXT NOT NULL DEFAULT ''`).run();
+  } catch (e) {
+  }
+  try {
+    await env2.DB.prepare(`ALTER TABLE user_routes ADD COLUMN stream_target TEXT NOT NULL DEFAULT ''`).run();
   } catch (e) {
   }
   try {
@@ -3298,7 +3308,7 @@ async function handleAdminApi(request, env2, url, session) {
     return json({ success: true, logs: results || [] });
   }
   if (url.pathname === "/admin/api/export" && request.method === "GET") {
-    const routes = (await env2.DB.prepare("SELECT prefix, target, remark, cache_img, compat_mode, ip_mode, sort_order, enabled, custom_headers, ip_allow, ip_block FROM routes WHERE created_by = ? ORDER BY sort_order, prefix").bind(adminActor).all()).results || [];
+    const routes = (await env2.DB.prepare("SELECT prefix, target, stream_target, remark, cache_img, compat_mode, ip_mode, sort_order, enabled, custom_headers, ip_allow, ip_block FROM routes WHERE created_by = ? ORDER BY sort_order, prefix").bind(adminActor).all()).results || [];
     const domains = (await env2.DB.prepare("SELECT domain, name FROM optimized_domains WHERE is_builtin = 0").all()).results || [];
     const st = await getSettings(env2);
     const body = JSON.stringify({ version: CURRENT_VERSION, exportedAt: (/* @__PURE__ */ new Date()).toISOString(), routes, domains, settings: st.raw }, null, 2);
@@ -3319,7 +3329,8 @@ async function handleAdminApi(request, env2, url, session) {
     for (const r of Array.isArray(data.routes) ? data.routes : []) {
       const err = validatePrefix(r?.prefix);
       const targets = splitTargets(r?.target);
-      if (err || !targets.length || !targets.every(isValidHttpUrl) || parseHeaderLines(r.custom_headers).error || !validIpList(parseIpList(r.ip_allow)) || !validIpList(parseIpList(r.ip_block))) {
+      const streamTargets = splitTargets(r?.stream_target || "");
+      if (err || !targets.length || !targets.every(isValidHttpUrl) || streamTargets.length > 0 && !streamTargets.every(isValidHttpUrl) || parseHeaderLines(r.custom_headers).error || !validIpList(parseIpList(r.ip_allow)) || !validIpList(parseIpList(r.ip_block))) {
         skipped.push(String(r?.prefix || "?"));
         continue;
       }
@@ -3331,6 +3342,7 @@ async function handleAdminApi(request, env2, url, session) {
       }
       const commonArgs = [
         targets.join(","),
+        streamTargets.join(","),
         String(r.remark || ""),
         r.cache_img === "off" ? "off" : "on",
         r.compat_mode === "on" ? "on" : "off",
@@ -3344,14 +3356,14 @@ async function handleAdminApi(request, env2, url, session) {
       ];
       if (cur !== void 0) {
         stmts.push(env2.DB.prepare(
-          `UPDATE routes SET target = ?, remark = ?, cache_img = ?, compat_mode = ?, ip_mode = ?,
+          `UPDATE routes SET target = ?, stream_target = ?, remark = ?, cache_img = ?, compat_mode = ?, ip_mode = ?,
              sort_order = ?, enabled = ?, custom_headers = ?, ip_allow = ?, ip_block = ?, created_by = ?
            WHERE rowid = ?`
         ).bind(...commonArgs, cur._rid));
       } else {
         stmts.push(env2.DB.prepare(
-          `INSERT INTO routes (target, remark, cache_img, compat_mode, ip_mode, sort_order, enabled, custom_headers, ip_allow, ip_block, created_by, prefix, last_play)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`
+          `INSERT INTO routes (target, stream_target, remark, cache_img, compat_mode, ip_mode, sort_order, enabled, custom_headers, ip_allow, ip_block, created_by, prefix, last_play)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`
         ).bind(...commonArgs, pf));
       }
       nr++;
@@ -3432,6 +3444,9 @@ async function handleAdminApi(request, env2, url, session) {
       if (!targets.length) return json({ error: "\u8BF7\u81F3\u5C11\u586B\u5199\u4E00\u4E2A\u76EE\u6807\u5730\u5740" }, 400);
       const badTarget = targets.find((t) => !isValidHttpUrl(t));
       if (badTarget) return json({ error: "\u76EE\u6807\u5730\u5740\u5FC5\u987B\u662F http(s):// \u5F00\u5934\u7684\u5408\u6CD5 URL\uFF1A" + badTarget }, 400);
+      const streamTargets = splitTargets(data.stream_target || "");
+      const badStreamTarget = streamTargets.find((t) => !isValidHttpUrl(t));
+      if (badStreamTarget) return json({ error: "推流地址必须是 http(s):// 开头的合法 URL：" + badStreamTarget }, 400);
       const hdrCheck = parseHeaderLines(data.custom_headers);
       if (hdrCheck.error) return json({ error: hdrCheck.error }, 400);
       const allowList = parseIpList(data.ip_allow);
@@ -3457,12 +3472,13 @@ async function handleAdminApi(request, env2, url, session) {
       }
       if (oldPrefix) {
         await env2.DB.prepare(
-          `UPDATE routes SET prefix = ?, target = ?, remark = ?, cache_img = ?, compat_mode = ?, ip_mode = ?,
+          `UPDATE routes SET prefix = ?, target = ?, stream_target = ?, remark = ?, cache_img = ?, compat_mode = ?, ip_mode = ?,
              custom_headers = ?, ip_allow = ?, ip_block = ?, created_by = ?
            WHERE rowid = ? AND created_by = ?`
         ).bind(
           prefix,
           targets.join(","),
+          streamTargets.join(","),
           String(data.remark || ""),
           data.cache_img === "off" ? "off" : "on",
           data.compat_mode === "on" ? "on" : "off",
@@ -3476,10 +3492,11 @@ async function handleAdminApi(request, env2, url, session) {
         ).run();
       } else {
         await env2.DB.prepare(
-          "INSERT INTO routes (prefix, target, remark, cache_img, compat_mode, ip_mode, last_play, sort_order, enabled, custom_headers, ip_allow, ip_block, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+          "INSERT INTO routes (prefix, target, stream_target, remark, cache_img, compat_mode, ip_mode, last_play, sort_order, enabled, custom_headers, ip_allow, ip_block, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         ).bind(
           prefix,
           targets.join(","),
+          streamTargets.join(","),
           String(data.remark || ""),
           data.cache_img === "off" ? "off" : "on",
           data.compat_mode === "on" ? "on" : "off",
@@ -4023,6 +4040,9 @@ async function userSaveRoute(env2, owner, data) {
   if (!targets.length) return { error: "\u8BF7\u81F3\u5C11\u586B\u5199\u4E00\u4E2A\u76EE\u6807\u5730\u5740" };
   const badTarget = targets.find((t) => !isValidHttpUrl(t));
   if (badTarget) return { error: "\u76EE\u6807\u5730\u5740\u5FC5\u987B\u662F http(s):// \u5F00\u5934\u7684\u5408\u6CD5 URL\uFF1A" + badTarget };
+  const streamTargets = splitTargets(data.stream_target || "");
+  const badStreamTarget = streamTargets.find((t) => !isValidHttpUrl(t));
+  if (badStreamTarget) return { error: "推流地址必须是 http(s):// 开头的合法 URL：" + badStreamTarget };
   const hdrCheck = parseHeaderLines(data.custom_headers);
   if (hdrCheck.error) return { error: hdrCheck.error };
   const allowList = parseIpList(data.ip_allow);
@@ -4047,11 +4067,12 @@ async function userSaveRoute(env2, owner, data) {
       if (clashOther) return { error: "\u8DEF\u5F84 /" + prefix + " \u5DF2\u88AB\u5176\u4ED6\u8DEF\u7531\u5360\u7528" };
     }
     await env2.DB.prepare(
-      `UPDATE routes SET prefix = ?, target = ?, remark = ?, cache_img = ?, compat_mode = ?, ip_mode = ?,
+      `UPDATE routes SET prefix = ?, target = ?, stream_target = ?, remark = ?, cache_img = ?, compat_mode = ?, ip_mode = ?,
         custom_headers = ?, ip_allow = ?, ip_block = ? WHERE rowid = ? AND user_id = ?`
     ).bind(
       prefix,
       targets.join(","),
+      streamTargets.join(","),
       String(data.remark || ""),
       data.cache_img === "off" ? "off" : "on",
       data.compat_mode === "on" ? "on" : "off",
@@ -4081,11 +4102,12 @@ async function userSaveRoute(env2, owner, data) {
   }
   const existing = await env2.DB.prepare("SELECT sort_order, last_play, enabled FROM user_routes WHERE owner = ? AND prefix = ?").bind(owner, lookupPrefix).first();
   const insert = env2.DB.prepare(
-    "INSERT OR REPLACE INTO user_routes (owner, prefix, target, remark, cache_img, compat_mode, ip_mode, last_play, sort_order, enabled, custom_headers, ip_allow, ip_block) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "INSERT OR REPLACE INTO user_routes (owner, prefix, target, stream_target, remark, cache_img, compat_mode, ip_mode, last_play, sort_order, enabled, custom_headers, ip_allow, ip_block) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
   ).bind(
     owner,
     prefix,
     targets.join(","),
+    streamTargets.join(","),
     String(data.remark || ""),
     data.cache_img === "off" ? "off" : "on",
     data.compat_mode === "on" ? "on" : "off",
@@ -4445,18 +4467,24 @@ async function resolveProxyTarget(request, env2, url) {
   const compatMode = route.compat_mode === "on";
   const rest = url.pathname.replace(/^\/[^/]*/, "");
   const targetUrls = splitTargets(route.target);
-  const upstreamUrls = [];
-  for (const target of targetUrls) {
-    try {
-      const t = new URL(target);
-      const base = t.pathname.replace(/\/+$/, "");
-      upstreamUrls.push(t.origin + base + rest + url.search);
-    } catch {
-      upstreamUrls.push(target.replace(/\/+$/, "") + rest + url.search);
+  const mapTargets = (list) => {
+    const out = [];
+    for (const target of list) {
+      try {
+        const t = new URL(target);
+        const base = t.pathname.replace(/\/+$/, "");
+        out.push(t.origin + base + rest + url.search);
+      } catch {
+        out.push(target.replace(/\/+$/, "") + rest + url.search);
+      }
     }
-  }
+    return out;
+  };
+  const upstreamUrls = mapTargets(targetUrls);
+  const streamUrls = mapTargets(splitTargets(String(route.stream_target || "").trim()));
   return {
     upstreamUrls,
+    streamUrls,
     enableCache,
     compatMode,
     clientIpMode: normalizeIpMode(route.ip_mode),
@@ -4508,7 +4536,7 @@ function progressKeyOf(request) {
 }
 __name(progressKeyOf, "progressKeyOf");
 async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
-  const { enableCache = true, compatMode = false, clientIpMode = "forward", matchedPrefix = null, statPrefix = null, routeOwner = "", legacyUserId = 0, customHeaders = [] } = opts;
+  const { enableCache = true, compatMode = false, clientIpMode = "forward", matchedPrefix = null, statPrefix = null, routeOwner = "", legacyUserId = 0, customHeaders = [], streamUrls = [] } = opts;
   const ipMode = normalizeIpMode(clientIpMode);
   const settings = await getSettings(env2);
   if (!upstreamUrls.length) return new Response("404: Target empty", { status: 404 });
@@ -4523,6 +4551,7 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
   const isPlaybackInfo = reqCategory === "playback_info";
   const isPlaying = reqCategory === "playing";
   const isPlayStart = isPlaying && /\/Sessions\/Playing\/?$/i.test(pathname);
+  const activeUrls = streamUrls.length && (reqCategory === "streaming" || reqCategory === "segment") ? streamUrls.concat(upstreamUrls) : upstreamUrls;
   if (!["streaming", "segment", "image", "static"].includes(reqCategory) && rateLimited(request.headers.get("cf-connecting-ip") || "unknown", settings.rateLimitPerMin)) {
     return new Response("429: Too Many Requests", { status: 429, headers: { "Retry-After": "30" } });
   }
@@ -4663,15 +4692,15 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
   let fallbackResponse = null;
   let lastError = null;
   let lastUpstreamUrl = null;
-  for (let i = 0; i < upstreamUrls.length; i++) {
+  for (let i = 0; i < activeUrls.length; i++) {
     let upstreamUrl;
     try {
-      upstreamUrl = new URL(upstreamUrls[i]);
+      upstreamUrl = new URL(activeUrls[i]);
     } catch {
       lastError = new Error("Invalid target URL");
       continue;
     }
-    if (i < upstreamUrls.length - 1 && (hostDownUntil.get(upstreamUrl.host) || 0) > Date.now()) {
+    if (i < activeUrls.length - 1 && (hostDownUntil.get(upstreamUrl.host) || 0) > Date.now()) {
       lastError = lastError || new Error("\u7EBF\u8DEF\u6682\u65F6\u4E0D\u53EF\u7528: " + upstreamUrl.host);
       continue;
     }
@@ -5822,6 +5851,11 @@ function buildAdminHtml(session, env2) {
       <p class="form-hint">\u4E00\u884C\u4E00\u4E2A\u5730\u5740\uFF08\u4E5F\u652F\u6301\u9017\u53F7\u5206\u9694\uFF09\uFF0C\u6309\u987A\u5E8F\u6545\u969C\u8F6C\u79FB</p>
     </div>
     <div class="form-group">
+      <label>推流地址（可选）</label>
+      <textarea id="routeStreamTarget" rows="2" placeholder="https://stream.example.com:8096"></textarea>
+      <p class="form-hint">仅视频流/切片请求走此地址（失败自动回退目标地址），API、图片、PlaybackInfo 等仍走目标地址。常规服务器留空即可。</p>
+    </div>
+    <div class="form-group">
       <label class="checkbox-label">
         <input type="checkbox" id="routeCache" checked> \u542F\u7528\u56FE\u7247/\u9759\u6001\u8D44\u6E90\u7F13\u5B58
       </label>
@@ -6025,6 +6059,7 @@ function openRouteModal() {
   document.getElementById('routeRemark').value = '';
   document.getElementById('routePrefix').value = '';
   document.getElementById('routeTarget').value = '';
+  document.getElementById('routeStreamTarget').value = '';
   document.getElementById('routeCache').checked = true;
   document.getElementById('routeCompat').checked = false;
   document.getElementById('routeIpMode').value = 'forward';
@@ -6046,6 +6081,7 @@ function editRoute(prefix) {
   document.getElementById('routePrefix').value = r.prefix;
   document.getElementById('routeTarget').value = String(r.target || '').split(',').map(function(x) { return x.trim(); }).filter(Boolean).join('\\n');
   document.getElementById('routeCache').checked = r.cache_img !== 'off';
+  document.getElementById('routeStreamTarget').value = String(r.stream_target || '').split(',').map(function(x) { return x.trim(); }).filter(Boolean).join('\\n');
   document.getElementById('routeCompat').checked = r.compat_mode === 'on';
   document.getElementById('routeIpMode').value = (r.ip_mode === 'strip' || r.ip_mode === 'disable') ? r.ip_mode : 'forward';
   document.getElementById('routeHeaders').value = r.custom_headers || '';
@@ -6073,6 +6109,7 @@ async function saveRoute() {
       oldPrefix: oldPrefix, prefix: prefix, target: target, remark: remark,
       source: document.getElementById('routeSource').value || '',
       routeId: document.getElementById('routeId').value || '',
+      stream_target: document.getElementById('routeStreamTarget').value.split(/[\\r\\n,]+/).map(function(s) { return s.trim(); }).filter(Boolean).join(','),
       cache_img: document.getElementById('routeCache').checked ? 'on' : 'off',
       compat_mode: document.getElementById('routeCompat').checked ? 'on' : 'off',
       ip_mode: document.getElementById('routeIpMode').value || 'forward',
@@ -7019,7 +7056,8 @@ var worker_default = {
       statPrefix: resolved.statPrefix,
       routeOwner: resolved.routeOwner,
       legacyUserId: resolved.legacyUserId,
-      customHeaders: resolved.customHeaders
+      customHeaders: resolved.customHeaders,
+      streamUrls: resolved.streamUrls
     });
   }
 };

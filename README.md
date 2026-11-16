@@ -2,11 +2,11 @@
 
 **Emby 反向代理 · 多用户路由面板**
 
-单文件 Cloudflare Worker，无需服务器、无需构建。集成反代、优选域名 DNS、访问统计、Telegram 日报、多用户子域名和 VPS 中继分流，仓库当前版本 **v6.8.0-multi**，入口文件 [worker.js](worker.js)。
+单文件 Cloudflare Worker，无需服务器、无需构建。集成反代、优选域名 DNS、访问统计、Telegram 日报、多用户子域名和 VPS 中继分流，仓库当前版本 **v6.8.5-multi**，入口文件 [worker.js](worker.js)。
 
 ![Platform](https://img.shields.io/badge/Cloudflare-Workers-F38020?style=flat-square&logo=cloudflare&logoColor=white)
 ![Database](https://img.shields.io/badge/D1-Database-00E5FF?style=flat-square)
-![Version](https://img.shields.io/badge/version-v6.8.0--multi-41d9ff?style=flat-square)
+![Version](https://img.shields.io/badge/version-v6.8.5--multi-41d9ff?style=flat-square)
 [![License](https://img.shields.io/badge/License-MIT-00FF9D?style=flat-square)](LICENSE)
 
 [![优选域名监控](https://img.shields.io/badge/Youxuan-yx.255432.xyz-00E5FF?style=flat-square)](https://yx.255432.xyz/)
@@ -31,6 +31,7 @@
 | --- | --- |
 | Emby 反向代理 | 支持 HTTP、HTTPS、WebSocket、Range 和流媒体 |
 | 多目标线路 | 同一路由可填多个上游，按顺序尝试并熔断 |
+| 推流线路 | 路由可另填可选「推流地址」，仅视频流/切片请求优先走该线路（失败自动回退目标地址），API/图片/PlaybackInfo 仍走目标地址 |
 | 智能缓存 | 图片和静态资源走边缘缓存，字幕与带凭据的图片不缓存 |
 | 多用户系统 | 邀请码注册，用户名即子域名，自动创建 CNAME |
 | 用户配额 | 默认 20 条私有路由，管理员可按用户调整为 1–200 |
