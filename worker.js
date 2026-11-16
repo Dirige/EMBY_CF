@@ -929,7 +929,7 @@ var process_default = _process;
 globalThis.process = process_default;
 
 // worker.js
-var CURRENT_VERSION = "v6.8.10-multi";
+var CURRENT_VERSION = "v6.8.11-multi";
 var DEFAULT_OPTIMIZED_DOMAINS = [
   { domain: "youxuan.cf.090227.xyz", name: "CF\u4F18\u9009-090227", isBuiltin: true },
   { domain: "cf.877774.xyz", name: "\u79CB\u540D\u5C71\u4F18\u9009", isBuiltin: true },
@@ -4488,6 +4488,57 @@ function fallbackLogThrottled(key) {
   return false;
 }
 __name(fallbackLogThrottled, "fallbackLogThrottled");
+function getStreamTargetParts(raw) {
+  try {
+    const url = new URL(raw);
+    if (!isValidHttpUrl(raw) || url.username || url.password || url.search || url.hash || isPrivateHost(url.hostname)) return null;
+    return { origin: url.origin, base: url.pathname.replace(/\/+$/, "") };
+  } catch {
+    return null;
+  }
+}
+__name(getStreamTargetParts, "getStreamTargetParts");
+function matchStreamTarget(url, targets) {
+  if (!url || !["http:", "https:"].includes(url.protocol) || url.username || url.password || isPrivateHost(url.hostname)) return null;
+  let match = null;
+  for (let index = 0; index < targets.length; index++) {
+    const parts = getStreamTargetParts(targets[index]);
+    if (!parts || url.origin !== parts.origin) continue;
+    if (url.pathname !== parts.base && !url.pathname.startsWith(parts.base + "/")) continue;
+    if (!match || parts.base.length > match.base.length) match = { ...parts, index };
+  }
+  return match;
+}
+__name(matchStreamTarget, "matchStreamTarget");
+function getStreamProxyLocation(request, target, targets, routePath) {
+  const match = matchStreamTarget(target, targets);
+  if (!match || !routePath) return "";
+  return new URL(request.url).origin + routePath + "/__stream/" + match.index + target.pathname.slice(match.base.length) + target.search + target.hash;
+}
+__name(getStreamProxyLocation, "getStreamProxyLocation");
+function rewritePlaybackStreamUrls(data, request, targets, routePath, upstreamUrl) {
+  let changed = false;
+  const rewrite = (obj, key) => {
+    const value = obj && obj[key];
+    if (typeof value !== "string" || !/^(?:https?:)?\/\//i.test(value)) return;
+    try {
+      const target = new URL(value, upstreamUrl);
+      const location = getStreamProxyLocation(request, target, targets, routePath);
+      if (location && location !== value) {
+        obj[key] = location;
+        changed = true;
+      }
+    } catch {
+    }
+  };
+  for (const source of Array.isArray(data?.MediaSources) ? data.MediaSources : []) {
+    rewrite(source, "DirectStreamUrl");
+    rewrite(source, "TranscodingUrl");
+    for (const stream of Array.isArray(source?.MediaStreams) ? source.MediaStreams : []) rewrite(stream, "DeliveryUrl");
+  }
+  return changed;
+}
+__name(rewritePlaybackStreamUrls, "rewritePlaybackStreamUrls");
 async function resolveProxyTarget(request, env2, url) {
   const rawSegments = url.pathname.split("/").filter(Boolean);
   let firstSeg = rawSegments[0] || "";
@@ -4511,6 +4562,9 @@ async function resolveProxyTarget(request, env2, url) {
   const compatMode = route.compat_mode === "on";
   const rest = url.pathname.replace(/^\/[^/]*/, "");
   const targetUrls = splitTargets(route.target);
+  const streamTargets = splitTargets(route.stream_target);
+  const streamProxyPath = "/" + encodeURIComponent(route.prefix);
+  const isStreamRequest = rest === "/__stream" || rest.startsWith("/__stream/");
   const mapTargets = (list) => {
     const out = [];
     for (const target of list) {
@@ -4524,11 +4578,33 @@ async function resolveProxyTarget(request, env2, url) {
     }
     return out;
   };
-  const upstreamUrls = mapTargets(targetUrls);
-  const streamUrls = mapTargets(splitTargets(String(route.stream_target || "").trim()));
+  let upstreamUrls;
+  let streamReferrer = "";
+  if (isStreamRequest) {
+    const pathMatch = rest.match(/^\/__stream\/(0|[1-9]\d*)(\/.*)?$/);
+    if (!pathMatch) return { error: new Response("Invalid stream proxy path", { status: 400 }) };
+    const parts = getStreamTargetParts(streamTargets[Number(pathMatch[1])]);
+    if (!parts) return { error: new Response("Stream target not configured", { status: 404 }) };
+    const target = new URL(parts.origin + parts.base + (pathMatch[2] || "") + url.search);
+    if (target.origin !== parts.origin || target.pathname !== parts.base && !target.pathname.startsWith(parts.base + "/")) {
+      return { error: new Response("Invalid stream proxy path", { status: 400 }) };
+    }
+    upstreamUrls = [target.toString()];
+    try {
+      const api = new URL(targetUrls[0]);
+      streamReferrer = api.origin + api.pathname.replace(/\/+$/, "") + "/web/index.html";
+    } catch {
+    }
+  } else {
+    // 播放仍先请求界面/API 服务器；真实推流路径由其 Location 或 PlaybackInfo 给出。
+    upstreamUrls = mapTargets(targetUrls);
+  }
   return {
     upstreamUrls,
-    streamUrls,
+    streamTargets,
+    streamProxyPath,
+    isStreamRequest,
+    streamReferrer,
     enableCache,
     compatMode,
     clientIpMode: normalizeIpMode(route.ip_mode),
@@ -4580,8 +4656,21 @@ function progressKeyOf(request) {
 }
 __name(progressKeyOf, "progressKeyOf");
 async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
-  const { enableCache = true, compatMode = false, clientIpMode = "forward", matchedPrefix = null, statPrefix = null, routeOwner = "", legacyUserId = 0, customHeaders = [], streamUrls = [] } = opts;
+  const { enableCache = true, compatMode = false, clientIpMode = "forward", matchedPrefix = null, statPrefix = null, routeOwner = "", legacyUserId = 0, customHeaders = [], streamTargets = [], streamProxyPath = "", isStreamRequest = false, streamReferrer = "" } = opts;
   const ipMode = normalizeIpMode(clientIpMode);
+  // 显式填写推流地址时必须看到 302，不能让兼容模式提前吞掉跳转。
+  const redirectMode = compatMode && !streamTargets.length ? "follow" : "manual";
+  const makeUpstreamHeaders = (target) => {
+    let crossOrigin = isStreamRequest;
+    try {
+      if (streamReferrer && new URL(streamReferrer).origin === target.origin) crossOrigin = false;
+    } catch {
+    }
+    const headers = buildUpstreamHeaders(request, target, { ipMode, compatMode, crossOrigin });
+    if (isStreamRequest && streamReferrer) headers.set("Referer", streamReferrer);
+    for (const [k, v] of customHeaders) headers.set(k, v);
+    return headers;
+  };
   const settings = await getSettings(env2);
   if (!upstreamUrls.length) return new Response("404: Target empty", { status: 404 });
   let firstUpstreamUrl;
@@ -4591,11 +4680,10 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
     return new Response("Invalid upstream URL", { status: 500 });
   }
   const pathname = firstUpstreamUrl.pathname;
-  const reqCategory = classifyRequest(pathname, request.method);
+  const reqCategory = isStreamRequest ? "streaming" : classifyRequest(pathname, request.method);
   const isPlaybackInfo = reqCategory === "playback_info";
   const isPlaying = reqCategory === "playing";
   const isPlayStart = isPlaying && /\/Sessions\/Playing\/?$/i.test(pathname);
-  const activeUrls = streamUrls.length && (reqCategory === "streaming" || reqCategory === "segment") ? streamUrls.concat(upstreamUrls) : upstreamUrls;
   if (!["streaming", "segment", "image", "static"].includes(reqCategory) && rateLimited(request.headers.get("cf-connecting-ip") || "unknown", settings.rateLimitPerMin)) {
     return new Response("429: Too Many Requests", { status: 429, headers: { "Retry-After": "30" } });
   }
@@ -4694,7 +4782,7 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
     }
   }
   const hasAuthHeader = SENSITIVE_REQ_HEADERS.some((h) => request.headers.has(h));
-  const canUseCache = enableCache && isCacheableRequest(reqCategory) && request.method === "GET" && !request.headers.has("Range") && !(reqCategory === "image" && hasAuthHeader);
+  const canUseCache = enableCache && !isStreamRequest && isCacheableRequest(reqCategory) && request.method === "GET" && !request.headers.has("Range") && !(reqCategory === "image" && hasAuthHeader);
   const cacheKey = canUseCache ? new Request(request.url, { method: "GET" }) : null;
   if (canUseCache) {
     try {
@@ -4721,13 +4809,12 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
     if (!relay) return null;
     const t = urlForRelay instanceof URL ? urlForRelay : new URL(urlForRelay);
     const rUrl = new URL(t.pathname + t.search, relay.base);
-    const fbHeaders = buildUpstreamHeaders(request, t, { ipMode, compatMode });
-    for (const [k, v] of customHeaders) fbHeaders.set(k, v);
+    const fbHeaders = makeUpstreamHeaders(t);
     const fbSign = await relayFetchHeaders(relay.secret, t.toString());
     for (const [k, v] of Object.entries(fbSign)) fbHeaders.set(k, v);
     const fbRange = request.headers.get("Range");
     if (fbRange) fbHeaders.set("Range", fbRange);
-    const fbInit = { method: request.method, headers: fbHeaders, redirect: compatMode ? "follow" : "manual" };
+    const fbInit = { method: request.method, headers: fbHeaders, redirect: redirectMode };
     if (requestBody) fbInit.body = requestBody;
     return fetch(new Request(rUrl.toString(), fbInit));
   }, "tryRelayFallback");
@@ -4736,16 +4823,15 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
   let fallbackResponse = null;
   let lastError = null;
   let lastUpstreamUrl = null;
-  for (let i = 0; i < activeUrls.length; i++) {
-    const isStreamUrl = streamUrls.length > 0 && i < streamUrls.length;
+  for (let i = 0; i < upstreamUrls.length; i++) {
     let upstreamUrl;
     try {
-      upstreamUrl = new URL(activeUrls[i]);
+      upstreamUrl = new URL(upstreamUrls[i]);
     } catch {
       lastError = new Error("Invalid target URL");
       continue;
     }
-    if (i < activeUrls.length - 1 && (hostDownUntil.get(upstreamUrl.host) || 0) > Date.now()) {
+    if (i < upstreamUrls.length - 1 && (hostDownUntil.get(upstreamUrl.host) || 0) > Date.now()) {
       lastError = lastError || new Error("\u7EBF\u8DEF\u6682\u65F6\u4E0D\u53EF\u7528: " + upstreamUrl.host);
       continue;
     }
@@ -4758,8 +4844,7 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
         }
       }
     }
-    const headers = buildUpstreamHeaders(request, upstreamUrl, { ipMode, compatMode });
-    for (const [k, v] of customHeaders) headers.set(k, v);
+    const headers = makeUpstreamHeaders(upstreamUrl);
     const rangeHeader = request.headers.get("Range");
     if (rangeHeader && (reqCategory === "streaming" || reqCategory === "segment" || reqCategory === "other")) {
       if (!headers.has("Range")) headers.set("Range", rangeHeader);
@@ -4769,24 +4854,13 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
     const fetchInit = {
       method: request.method,
       headers,
-      redirect: compatMode ? "follow" : "manual"
+      redirect: redirectMode
     };
     if (requestBody) fetchInit.body = requestBody;
     const sig = timeoutSignal();
     if (sig) fetchInit.signal = sig;
     try {
       let response = await fetch(new Request(upstreamUrl.toString(), fetchInit));
-      if (isStreamUrl && response.status >= 400) {
-        lastError = new Error(`HTTP ${response.status}`);
-        hostDownUntil.set(upstreamUrl.host, Date.now() + HOST_DOWN_MS);
-        if (!fallbackLogThrottled((matchedPrefix || "direct") + "|stream")) {
-          try {
-            await auditLog(env2, "stream.fallback", `${matchedPrefix || "direct"} ${request.method} ${pathname} stream_status=${response.status} colo=${request.cf?.colo || ""}`);
-          } catch (_) {
-          }
-        }
-        continue;
-      }
       if (canRelayFallback && ([401, 403, 451].includes(response.status) || CF_ORIGIN_ERROR_STATUSES.includes(response.status))) {
         if (!fallbackLogThrottled((matchedPrefix || "direct") + "|40x")) {
           try {
@@ -4803,7 +4877,7 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
         } catch (_) {
         }
       }
-      if (!compatMode && UPSTREAM_FAILOVER_STATUSES.includes(response.status)) {
+      if (redirectMode === "manual" && UPSTREAM_FAILOVER_STATUSES.includes(response.status)) {
         lastError = new Error(`HTTP ${response.status}`);
         hostDownUntil.set(upstreamUrl.host, Date.now() + HOST_DOWN_MS);
         fallbackResponse = response;
@@ -4845,7 +4919,7 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
   if (!finalResponse) {
     return new Response("\u6240\u6709\u7EBF\u8DEF\u4E0D\u53EF\u7528: " + (lastError?.message || "Unknown"), { status: 502 });
   }
-  if (!compatMode && lastUpstreamUrl) {
+  if (redirectMode === "manual" && lastUpstreamUrl) {
     const location = finalResponse.headers.get("Location");
     if (location && finalResponse.status >= 300 && finalResponse.status < 400) {
       let redirectUrl;
@@ -4856,6 +4930,21 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
       }
       if (redirectUrl.protocol !== "http:" && redirectUrl.protocol !== "https:") {
         return new Response("Bad redirect location", { status: 502 });
+      }
+      const streamLocation = getStreamProxyLocation(request, redirectUrl, streamTargets, streamProxyPath);
+      if (streamLocation) {
+        // 等价于 nginx proxy_redirect；保留真实路径/签名，客户端下一跳仍走本用户路由。
+        const newHeaders = sanitizeResponseHeaders(finalResponse.headers);
+        newHeaders.set("Location", streamLocation);
+        newHeaders.set("Cache-Control", "no-store");
+        newHeaders.set("Access-Control-Allow-Origin", "*");
+        applySecurityHeaders(newHeaders);
+        if (relayFallbackUsed) newHeaders.set("X-Relay-Fallback", "1");
+        recordStats(0);
+        if (!fallbackLogThrottled((statPrefix || matchedPrefix || "direct") + "|stream.redirect")) {
+          ctx.waitUntil(auditLog(env2, "stream.redirect", `${statPrefix || matchedPrefix || "direct"} ${request.method} host=${redirectUrl.host}`));
+        }
+        return new Response(finalResponse.body, { status: finalResponse.status, headers: newHeaders });
       }
       if (MANUAL_REDIRECT_DOMAINS.concat(settings.manualDomains).some((domain2) => redirectUrl.hostname === domain2 || redirectUrl.hostname.endsWith("." + domain2))) {
         const newHeaders = sanitizeResponseHeaders(finalResponse.headers);
@@ -4902,6 +4991,20 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
         return new Response("\u91CD\u5B9A\u5411\u76EE\u6807\u4E0D\u53EF\u7528: " + (lastError?.message || redirectUrl.host), { status: 502 });
       }
       finalResponse = redirectResponse;
+    }
+  }
+  if (isPlaybackInfo && streamTargets.length && finalResponse.status === 200 && request.method !== "HEAD") {
+    try {
+      const data = await finalResponse.clone().json();
+      if (rewritePlaybackStreamUrls(data, request, streamTargets, streamProxyPath, lastUpstreamUrl || firstUpstreamUrl)) {
+        const headers = sanitizeResponseHeaders(finalResponse.headers);
+        for (const key of ["Content-Length", "Content-Encoding", "ETag", "Content-MD5", "Digest"]) headers.delete(key);
+        headers.set("Content-Type", "application/json; charset=utf-8");
+        headers.set("Cache-Control", "no-store");
+        finalResponse = new Response(JSON.stringify(data), { status: finalResponse.status, statusText: finalResponse.statusText, headers });
+      }
+    } catch {
+      // 非 JSON 或没有匹配的播放 URL 时，保持原响应，不改媒体源的存储 Path。
     }
   }
   const responseHeaders = sanitizeResponseHeaders(finalResponse.headers);
@@ -5934,7 +6037,7 @@ function buildAdminHtml(session, env2) {
     <div class="form-group">
       <label>推流地址（可选）</label>
       <textarea id="routeStreamTarget" rows="2" placeholder="https://stream.example.com:8096"></textarea>
-      <p class="form-hint">仅视频流/切片请求走此地址（失败自动回退目标地址），API、图片、PlaybackInfo 等仍走目标地址。常规服务器留空即可。</p>
+      <p class="form-hint">用于 Emby 前后端分离：填写源站跳转到的推流服务器地址（可多行），匹配的 302/播放 URL 会改写回本路由并经 Worker 反代。目标地址仍填写界面/API 地址；常规服和网盘直连留空。不会直接往推流地址拼接 Emby 播放路径。</p>
     </div>
     <div class="form-group">
       <label class="checkbox-label">
@@ -7138,7 +7241,10 @@ var worker_default = {
       routeOwner: resolved.routeOwner,
       legacyUserId: resolved.legacyUserId,
       customHeaders: resolved.customHeaders,
-      streamUrls: resolved.streamUrls
+      streamTargets: resolved.streamTargets,
+      streamProxyPath: resolved.streamProxyPath,
+      isStreamRequest: resolved.isStreamRequest,
+      streamReferrer: resolved.streamReferrer
     });
   }
 };

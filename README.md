@@ -2,11 +2,11 @@
 
 **Emby 反向代理 · 多用户路由面板**
 
-单文件 Cloudflare Worker，无需服务器、无需构建。集成反代、优选域名 DNS、访问统计、Telegram 日报、多用户子域名和 VPS 中继分流，仓库当前版本 **v6.8.10-multi**，入口文件 [worker.js](worker.js)。
+单文件 Cloudflare Worker，无需服务器、无需构建。集成反代、优选域名 DNS、访问统计、Telegram 日报、多用户子域名和 VPS 中继分流，仓库当前版本 **v6.8.11-multi**，入口文件 [worker.js](worker.js)。
 
 ![Platform](https://img.shields.io/badge/Cloudflare-Workers-F38020?style=flat-square&logo=cloudflare&logoColor=white)
 ![Database](https://img.shields.io/badge/D1-Database-00E5FF?style=flat-square)
-![Version](https://img.shields.io/badge/version-v6.8.10--multi-41d9ff?style=flat-square)
+![Version](https://img.shields.io/badge/version-v6.8.11--multi-41d9ff?style=flat-square)
 [![License](https://img.shields.io/badge/License-MIT-00FF9D?style=flat-square)](LICENSE)
 
 [![优选域名监控](https://img.shields.io/badge/Youxuan-yx.255432.xyz-00E5FF?style=flat-square)](https://yx.255432.xyz/)
@@ -31,7 +31,7 @@
 | --- | --- |
 | Emby 反向代理 | 支持 HTTP、HTTPS、WebSocket、Range 和流媒体 |
 | 多目标线路 | 同一路由可填多个上游，按顺序尝试并熔断 |
-| 推流线路 | 路由可另填可选「推流地址」，仅视频流/切片请求优先走该线路（失败自动回退目标地址），API/图片/PlaybackInfo 仍走目标地址 |
+| 前后端分离反代 | 可选「推流地址」用于匹配源站的 302/播放 URL，改写回本路由后由 Worker 反代；不向推流服务器预先拼接 Emby 播放路径 |
 | 智能缓存 | 图片和静态资源走边缘缓存，字幕与带凭据的图片不缓存 |
 | 多用户系统 | 邀请码注册，用户名即子域名，自动创建 CNAME |
 | 用户配额 | 默认 20 条私有路由，管理员可按用户调整为 1–200 |
@@ -41,6 +41,18 @@
 | 通知 | Telegram 日报、线路异常告警、通用 Webhook |
 | 访问控制 | IP 透传模式、IP 白名单/黑名单、自定义请求头 |
 | VPS 中继 | 后台配置 VPS 中继地址与密钥；CF 直连失败（网络错误/401/403/451）自动切换 VPS，覆盖全部路由与 `/https://源站:端口` 直连代理路径；中继限额超限自动回落直连 |
+
+### 前后端分离服的填写方式
+
+- **目标地址**填写界面/API 地址，例如 `https://cf.sfcj.org`。
+- **推流地址**填写需要纳入反代的推流服务器基址，例如 `https://media.emby.pro`。支持多行；每个地址对应独立映射，不是按顺序尝试的同路径备用线路。
+- 初始播放请求仍交给目标地址。源站跳向已配置推流地址的 `Location` 会改写为 `/<路由>/__stream/<编号>/<实际路径>`，播放器下一跳仍通过 Worker 反代，而不是直连推流域名。
+- 保留实际路径、签名查询、Range/If-Range、HEAD 和 206 响应；推流 body 直接透传，不等待完整下载。
+- `PlaybackInfo` 中匹配推流配置的绝对 `DirectStreamUrl`、`TranscodingUrl`、`DeliveryUrl` 也会改写；不修改媒体源的存储 `Path`、相对播放 URL 或其它域名。
+- 推流请求仍遵守本用户路由的启停、IP 黑白名单和自定义头，并默认使用界面服务器的 `Referer`（可被自定义头覆盖）。不借用公开 `/https://...` 入口。
+- **不需要 VPS 才能使用**；已有中继仍仅作为请求失败时的回退。显式推流配置优先于网盘直连白名单；常规服、网盘直连服留空即可。
+
+参考：[Emby 播放分离 nginx 配置](https://github.com/lateautumn2/Emby-nginx-reProxy/blob/main/misakaf.conf)。实际起播速度需使用有效播放会话实测，不能由无鉴权或虚构影片请求的 404/403 判断。
 
 ### VPS 中继说明
 
