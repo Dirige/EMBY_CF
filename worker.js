@@ -929,7 +929,7 @@ var process_default = _process;
 globalThis.process = process_default;
 
 // worker.js
-var CURRENT_VERSION = "v6.8.6-multi";
+var CURRENT_VERSION = "v6.8.8-multi";
 var DEFAULT_OPTIMIZED_DOMAINS = [
   { domain: "youxuan.cf.090227.xyz", name: "CF\u4F18\u9009-090227", isBuiltin: true },
   { domain: "cf.877774.xyz", name: "\u79CB\u540D\u5C71\u4F18\u9009", isBuiltin: true },
@@ -1003,6 +1003,8 @@ var RESERVED_SUBDOMAINS = /* @__PURE__ */ new Set([
 ]);
 var MANUAL_REDIRECT_DOMAINS = [
   "emby.bangumi.ca",
+  // 非越媒体库推流直链宿主（302 透传给客户端直连）
+  "emby.pro",
   "aliyundrive.com",
   "aliyundrive.net",
   "alipan.com",
@@ -4737,6 +4739,7 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
   let lastError = null;
   let lastUpstreamUrl = null;
   for (let i = 0; i < activeUrls.length; i++) {
+    const isStreamUrl = streamUrls.length > 0 && i < streamUrls.length;
     let upstreamUrl;
     try {
       upstreamUrl = new URL(activeUrls[i]);
@@ -4775,6 +4778,17 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
     if (sig) fetchInit.signal = sig;
     try {
       let response = await fetch(new Request(upstreamUrl.toString(), fetchInit));
+      if (isStreamUrl && response.status >= 400) {
+        lastError = new Error(`HTTP ${response.status}`);
+        hostDownUntil.set(upstreamUrl.host, Date.now() + HOST_DOWN_MS);
+        if (!fallbackLogThrottled((matchedPrefix || "direct") + "|stream")) {
+          try {
+            await auditLog(env2, "stream.fallback", `${matchedPrefix || "direct"} ${request.method} ${pathname} stream_status=${response.status} colo=${request.cf?.colo || ""}`);
+          } catch (_) {
+          }
+        }
+        continue;
+      }
       if (canRelayFallback && ([401, 403, 451].includes(response.status) || CF_ORIGIN_ERROR_STATUSES.includes(response.status))) {
         if (!fallbackLogThrottled((matchedPrefix || "direct") + "|40x")) {
           try {
