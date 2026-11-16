@@ -929,7 +929,7 @@ var process_default = _process;
 globalThis.process = process_default;
 
 // worker.js
-var CURRENT_VERSION = "v6.8.8-multi";
+var CURRENT_VERSION = "v6.8.10-multi";
 var DEFAULT_OPTIMIZED_DOMAINS = [
   { domain: "youxuan.cf.090227.xyz", name: "CF\u4F18\u9009-090227", isBuiltin: true },
   { domain: "cf.877774.xyz", name: "\u79CB\u540D\u5C71\u4F18\u9009", isBuiltin: true },
@@ -1003,8 +1003,6 @@ var RESERVED_SUBDOMAINS = /* @__PURE__ */ new Set([
 ]);
 var MANUAL_REDIRECT_DOMAINS = [
   "emby.bangumi.ca",
-  // 非越媒体库推流直链宿主（302 透传给客户端直连）
-  "emby.pro",
   "aliyundrive.com",
   "aliyundrive.net",
   "alipan.com",
@@ -4874,11 +4872,36 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
       const redirectInit = { method: request.method, headers: newReqHeaders, body: requestBody || void 0, redirect: "follow" };
       const rsig = timeoutSignal();
       if (rsig) redirectInit.signal = rsig;
+      let redirectResponse = null;
+      let redirectBlocked = false;
       try {
-        finalResponse = await fetch(redirectUrl.toString(), redirectInit);
+        const rr = await fetch(redirectUrl.toString(), redirectInit);
+        if ([401, 403, 451].includes(rr.status) || rr.status >= 500) redirectBlocked = true;
+        else redirectResponse = rr;
       } catch (err) {
-        return new Response("\u91CD\u5B9A\u5411\u76EE\u6807\u4E0D\u53EF\u7528: " + (err?.message || "Unknown"), { status: 502 });
+        redirectBlocked = true;
+        lastError = err;
       }
+      if (redirectBlocked && canRelayFallback) {
+        if (!fallbackLogThrottled((matchedPrefix || "direct") + "|rdr")) {
+          try {
+            await auditLog(env2, "relay.fallback", `${matchedPrefix || "direct"} REDIRECT ${redirectUrl.host} colo=${request.cf?.colo || ""}`);
+          } catch (_) {
+          }
+        }
+        try {
+          const rb = await tryRelayFallback(redirectUrl);
+          if (relayResponseUsable(rb)) {
+            redirectResponse = rb;
+            relayFallbackUsed = true;
+          }
+        } catch (_) {
+        }
+      }
+      if (!redirectResponse) {
+        return new Response("\u91CD\u5B9A\u5411\u76EE\u6807\u4E0D\u53EF\u7528: " + (lastError?.message || redirectUrl.host), { status: 502 });
+      }
+      finalResponse = redirectResponse;
     }
   }
   const responseHeaders = sanitizeResponseHeaders(finalResponse.headers);

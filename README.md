@@ -2,11 +2,11 @@
 
 **Emby 反向代理 · 多用户路由面板**
 
-单文件 Cloudflare Worker，无需服务器、无需构建。集成反代、优选域名 DNS、访问统计、Telegram 日报、多用户子域名和 VPS 中继分流，仓库当前版本 **v6.8.8-multi**，入口文件 [worker.js](worker.js)。
+单文件 Cloudflare Worker，无需服务器、无需构建。集成反代、优选域名 DNS、访问统计、Telegram 日报、多用户子域名和 VPS 中继分流，仓库当前版本 **v6.8.10-multi**，入口文件 [worker.js](worker.js)。
 
 ![Platform](https://img.shields.io/badge/Cloudflare-Workers-F38020?style=flat-square&logo=cloudflare&logoColor=white)
 ![Database](https://img.shields.io/badge/D1-Database-00E5FF?style=flat-square)
-![Version](https://img.shields.io/badge/version-v6.8.8--multi-41d9ff?style=flat-square)
+![Version](https://img.shields.io/badge/version-v6.8.10--multi-41d9ff?style=flat-square)
 [![License](https://img.shields.io/badge/License-MIT-00FF9D?style=flat-square)](LICENSE)
 
 [![优选域名监控](https://img.shields.io/badge/Youxuan-yx.255432.xyz-00E5FF?style=flat-square)](https://yx.255432.xyz/)
