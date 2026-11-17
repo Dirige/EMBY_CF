@@ -929,7 +929,7 @@ var process_default = _process;
 globalThis.process = process_default;
 
 // worker.js
-var CURRENT_VERSION = "v6.8.12-multi";
+var CURRENT_VERSION = "v6.8.11-multi";
 var DEFAULT_OPTIMIZED_DOMAINS = [
   { domain: "youxuan.cf.090227.xyz", name: "CF\u4F18\u9009-090227", isBuiltin: true },
   { domain: "cf.877774.xyz", name: "\u79CB\u540D\u5C71\u4F18\u9009", isBuiltin: true },
@@ -4667,17 +4667,7 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
     } catch {
     }
     const headers = buildUpstreamHeaders(request, target, { ipMode, compatMode, crossOrigin });
-    if (isStreamRequest) {
-      // 推流 Referer 按实际推流域生成（Lily 模式约定）；同域（非分离站）沿用原 API 域 Referer，行为不变。
-      let referer = streamReferrer;
-      try {
-        if (streamReferrer && new URL(streamReferrer).origin !== target.origin) {
-          referer = target.origin + "/web/index.html";
-        }
-      } catch {
-      }
-      if (referer) headers.set("Referer", referer);
-    }
+    if (isStreamRequest && streamReferrer) headers.set("Referer", streamReferrer);
     for (const [k, v] of customHeaders) headers.set(k, v);
     return headers;
   };
@@ -4968,8 +4958,6 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
       }
       const crossOrigin = redirectUrl.origin !== lastUpstreamUrl.origin;
       const newReqHeaders = buildUpstreamHeaders(request, redirectUrl, { ipMode, compatMode: false, crossOrigin });
-      // 内部跟跳同样继承路由自定义头，与直连/中继兜底路径保持一致。
-      for (const [k, v] of customHeaders) newReqHeaders.set(k, v);
       const redirectInit = { method: request.method, headers: newReqHeaders, body: requestBody || void 0, redirect: "follow" };
       const rsig = timeoutSignal();
       if (rsig) redirectInit.signal = rsig;
