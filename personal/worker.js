@@ -1,4 +1,4 @@
-var CURRENT_VERSION = "v6.4.8";
+var CURRENT_VERSION = "v6.4.9";
 var DEFAULT_OPTIMIZED_DOMAINS = [
   { domain: "youxuan.cf.090227.xyz", name: "CF优选-090227", isBuiltin: true },
   { domain: "cf.877774.xyz", name: "秋名山优选", isBuiltin: true },
@@ -29,6 +29,7 @@ var MANUAL_REDIRECT_DOMAINS = [
   "emby.bangumi.ca",
   "aliyundrive.com",
   "aliyundrive.net",
+  "alipan.com",
   "aliyuncs.com",
   "alicdn.com",
   "aliyun.com",
@@ -53,6 +54,49 @@ var MANUAL_REDIRECT_DOMAINS = [
   "uc.cn",
   "ucdrive.cn",
   "xiaoya.pro",
+  // 光鸭云盘
+  "guangya.net",
+  "guangyapan.com",
+  "guangyacdn.com",
+  // 123 云盘（后四个为备用访问域名）
+  "123pan.com",
+  "123pan.cn",
+  "123684.com",
+  "123865.com",
+  "123912.com",
+  "123952.com",
+  // 移动云盘（和彩云）
+  "139.com",
+  "10086.cn",
+  // 百度网盘
+  "pan.baidu.com",
+  "pcs.baidu.com",
+  "baidupcs.com",
+  "bcebos.com",
+  // 联通云盘
+  "wo.cn",
+  "wocloud.com.cn",
+  // 腾讯微云
+  "weiyun.com",
+  // 蓝奏云（含优享版）
+  "lanzou.com",
+  "lanzoui.com",
+  "lanzoux.com",
+  "lanzn.com",
+  "lanpv.com",
+  // 城通网盘
+  "ctfile.com",
+  "ctdisk.com",
+  "400gb.com",
+  // 小飞机网盘
+  "feijipan.com",
+  // 曲奇云盘
+  "quqi.com",
+  // 亿方云
+  "fangcloud.com",
+  "fangcloud.net",
+  // PikPak（迅雷海外）
+  "mypikpak.com",
   "myqcloud.com",
   "cloudfront.net",
   "akamaized.net",

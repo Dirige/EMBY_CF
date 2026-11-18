@@ -21,7 +21,10 @@
 
 单用户 + VPS 中继分流版（三态分流 `off/on/image`、视频直连失败自动回退 VPS、一键部署脚本）：见 **[personal/README.md](personal/README.md)**。
 
-**版本对齐原则**：`personal/worker.js` 与 CF 线上部署的 proxy worker 保持同一版本。当前为 **v6.4.8**，并已验证与线上 esbuild/wrangler 打包产物**字节级一致**：把本文件放回与线上完全相同的目录结构（全局 wrangler + 项目根目录 `worker.js`，`compatibility_date=2025-05-15` + `nodejs_compat`）执行 `wrangler deploy --dry-run --outdir dist`，输出的 `dist/worker.js`（236004 字节）与线上部署产物 `cmp` 零差异。
+**版本对齐原则**：`personal/worker.js` 与 CF 线上部署的 proxy worker 保持同一版本。当前为 **v6.4.9**（在 v6.4.8 基础上把内置网盘直链白名单补齐到与多人版一致的 66 条，版本号 +1）。
+
+- v6.4.8 曾验证：源码按线上相同目录结构（全局 wrangler + 项目根目录 `worker.js`，`compatibility_date=2025-05-15` + `nodejs_compat`）执行 `wrangler deploy --dry-run --outdir dist`，产物与线上部署版本字节级一致（236004 字节）。
+- v6.4.9 采用「在 v6.4.8 线上产物上直接打补丁」方式部署，改动仅两处：白名单数组新增 33 条（含分组注释）、`CURRENT_VERSION` 改为 `v6.4.9`；线上回读 236820 字节，与本地补丁文件 sha256 逐字节一致。
 
 ---
 
