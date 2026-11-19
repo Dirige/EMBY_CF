@@ -1,0 +1,27 @@
+/* Complements the original personal glass theme; does not replace its palette. */
+:root { --border: var(--line); }
+.edition-label { font-size: 10px; color: var(--text-dim); border: 1px solid var(--line); border-radius: 999px; padding: 3px 9px; white-space: nowrap; letter-spacing: .04em; }
+.workspace-pane { display: flex; flex-direction: column; gap: 22px; }
+.workspace-pane[hidden] { display: none !important; }
+.meta-tag { font-size: 11px; color: var(--text-dim); padding: 4px 9px; border: 1px solid var(--line); border-radius: 999px; }
+.tabbar { flex-shrink: 0; }
+.card { min-width: 0; }
+.table-wrap { overflow-x: auto; }
+.card table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.card th, .card td { text-align: left; padding: 12px 9px; border-bottom: 1px solid var(--line); }
+.card th { font-weight: 600; color: var(--text-dim); }
+.card td { overflow-wrap: anywhere; }
+.admin-bg { background-color: var(--bg); }
+body[data-edition="multi"] .admin-bg { background-image: linear-gradient(115deg, rgba(var(--veil-rgb,6,9,15),.89), rgba(var(--veil-rgb,6,9,15),.65)), url('/bing-wallpaper'); }
+@supports not (backdrop-filter: blur(1px)) { .card, .topbar, .modal-inner { background: var(--bg); } }
+@media (max-width: 680px) {
+  .edition-label { display: none; }
+  .card { padding: 18px; }
+  .card table { min-width: 520px; }
+  .container { padding-left: 14px; padding-right: 14px; }
+  .topbar { margin-left: -14px; margin-right: -14px; padding-left: 14px; padding-right: 14px; flex-wrap: wrap; }
+  .topbar-actions { max-width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}

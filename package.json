@@ -1,0 +1,20 @@
+{
+  "name": "emby-cf-refactor",
+  "version": "0.1.0-local",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.14" },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "preview": "node scripts/preview.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "test:browser": "playwright test",
+    "check": "npm run build && npm test && npm run test:browser"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.1",
+    "esbuild": "0.28.2",
+    "miniflare": "4.20260730.0",
+    "typescript": "5.9.3"
+  }
+}

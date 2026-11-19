@@ -4,6 +4,8 @@
 
 单文件 Cloudflare Worker，无需服务器、无需构建。集成反代、优选域名 DNS、访问统计、Telegram 日报、多用户子域名和 VPS 中继分流，仓库当前版本 **v6.8.11-multi**，入口文件 [worker.js](worker.js)。
 
+> **本地重构副本（未部署、未推送）**：当前分支 `refactor/local-acceptance` 正在把个人版与多人版拆成共享核心 + 两个独立发行版。开发环境、验收步骤、已知限制与发布门槛见 **[HANDOFF.md](HANDOFF.md)**。线上仍是个人版 `v6.4.9`、多人版 `v6.8.11-multi`，本分支的任何构建都没有上线。
+
 ![Platform](https://img.shields.io/badge/Cloudflare-Workers-F38020?style=flat-square&logo=cloudflare&logoColor=white)
 ![Database](https://img.shields.io/badge/D1-Database-00E5FF?style=flat-square)
 ![Version](https://img.shields.io/badge/version-v6.8.11--multi-41d9ff?style=flat-square)
@@ -24,7 +26,7 @@
 **版本对齐原则**：`personal/worker.js` 与 CF 线上部署的 proxy worker 保持同一版本。当前为 **v6.4.9**（在 v6.4.8 基础上把内置网盘直链白名单补齐到与多人版一致的 66 条，版本号 +1）。
 
 - v6.4.8 曾验证：源码按线上相同目录结构（全局 wrangler + 项目根目录 `worker.js`，`compatibility_date=2025-05-15` + `nodejs_compat`）执行 `wrangler deploy --dry-run --outdir dist`，产物与线上部署版本字节级一致（236004 字节）。
-- v6.4.9 采用「在 v6.4.8 线上产物上直接打补丁」方式部署，改动仅两处：白名单数组新增 33 条（含分组注释）、`CURRENT_VERSION` 改为 `v6.4.9`；线上回读 236820 字节，与本地补丁文件 sha256 逐字节一致。
+- v6.4.9 采用「在 v6.4.8 线上产物上直接打补丁」方式部署，改动仅两处：网盘直链白名单由 34 条补齐到 66 条（新增 32 条，含 `alipan.com`，附分组注释）、`CURRENT_VERSION` 改为 `v6.4.9`；线上回读 236820 字节，与本地补丁文件 sha256 逐字节一致。
 
 ---
 

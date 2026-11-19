@@ -1,0 +1,567 @@
+[
+  {
+    "file": "src/editions/multi/integrations/analytics.js",
+    "exports": [
+      "cfGetAccountHttp",
+      "workerHostCache",
+      "getWorkerHosts",
+      "makeHostMatcher",
+      "cfGetZoneSummary",
+      "cfGetZoneDailySeries",
+      "cfGetAccountSummary",
+      "cfGetAccountDailySeries",
+      "cfGetWorkerSummary",
+      "buildDailyReport",
+      "sendDailyReport",
+      "statsBuffer",
+      "routeStatsBuffer",
+      "userStatsBuffer",
+      "statsBufferCount",
+      "statsLastFlush"
+    ]
+  },
+  {
+    "file": "src/editions/multi/config/settings.js",
+    "exports": [
+      "settingsCache",
+      "getSettings",
+      "setSetting",
+      "SETTING_KEYS"
+    ]
+  },
+  {
+    "file": "src/editions/multi/proxy/routes.js",
+    "exports": [
+      "validateUserPrefix",
+      "ownerCache",
+      "clearOwnerCache",
+      "resolveOwnerFromHost",
+      "routeCache",
+      "clearRouteCache",
+      "getRouteCached",
+      "resolveProxyTarget"
+    ]
+  },
+  {
+    "file": "src/editions/multi/admin/api.js",
+    "exports": [
+      "handleAdminApi",
+      "handleUserApi"
+    ]
+  },
+  {
+    "file": "src/editions/multi/users/admin.js",
+    "exports": [
+      "adminListUsers",
+      "adminCreateUser",
+      "adminUpdateUser",
+      "adminDeleteUser",
+      "adminResetData"
+    ]
+  },
+  {
+    "file": "src/editions/multi/users/invites.js",
+    "exports": [
+      "adminListInvites",
+      "adminCreateInvite",
+      "adminClearInvites",
+      "adminDeleteInvite"
+    ]
+  },
+  {
+    "file": "src/editions/multi/users/dns.js",
+    "exports": [
+      "userEntryHost",
+      "isValidIPv4",
+      "isValidDnsValue",
+      "provisionUserDns",
+      "userUpdateDns",
+      "userEnsureDNS",
+      "userDnsInfo"
+    ]
+  },
+  {
+    "file": "src/editions/multi/users/routes.js",
+    "exports": [
+      "routesHasUserIdCache",
+      "routesHasUserId",
+      "getUserLegacyRoutes",
+      "getLegacyRouteForUser",
+      "countUserRoutes",
+      "userListRoutes",
+      "userSaveRoute",
+      "userDeleteRoute"
+    ]
+  },
+  {
+    "file": "src/editions/multi/integrations/zone.js",
+    "exports": [
+      "getUserDomain",
+      "getStatsHost",
+      "zoneInfoCaches",
+      "resolveZoneInfo",
+      "invalidateZoneInfoCache"
+    ]
+  },
+  {
+    "file": "src/editions/multi/auth/session.js",
+    "exports": [
+      "SESSION_TTL_SEC",
+      "ADMIN_UID",
+      "enc",
+      "hexToBytes",
+      "hmacHex",
+      "safeEqual",
+      "sessionSecret",
+      "makeSessionToken",
+      "verifySessionToken",
+      "randomHex",
+      "hashPassword",
+      "verifyPassword",
+      "userCache",
+      "clearUserCache",
+      "rowToUser",
+      "publicUser",
+      "getUserById",
+      "getUserByUsername",
+      "getSession",
+      "isAdmin",
+      "loginFails",
+      "loginBlocked",
+      "loginFailed",
+      "sessionCookie",
+      "loginJson",
+      "adminLoginResponse",
+      "makeInviteCode",
+      "handleRegister",
+      "sanitizeUsername",
+      "sanitizeSubdomain",
+      "entryNameError",
+      "changePassword"
+    ]
+  },
+  {
+    "file": "src/editions/multi/entry.js",
+    "exports": [
+      "worker_default"
+    ]
+  },
+  {
+    "file": "src/editions/multi/http/responses.js",
+    "exports": [
+      "applySecurityHeaders"
+    ]
+  },
+  {
+    "file": "src/editions/multi/integrations/dns.js",
+    "exports": [
+      "createOrUpdateDNSRecord"
+    ]
+  },
+  {
+    "file": "src/editions/multi/integrations/stats.js",
+    "exports": [
+      "escapeLike",
+      "getD1Stats",
+      "handleStatsRequest"
+    ]
+  },
+  {
+    "file": "src/editions/multi/maintenance.js",
+    "exports": [
+      "runHealthCheck",
+      "runScheduled"
+    ]
+  },
+  {
+    "file": "src/editions/multi/relay/protocol.js",
+    "exports": [
+      "normalizeRelayBase",
+      "getRelayCfg",
+      "relayFetchHeaders"
+    ]
+  },
+  {
+    "file": "src/editions/multi/proxy/state.js",
+    "exports": [
+      "fallbackLogAt",
+      "fallbackLogThrottled",
+      "hostDownUntil",
+      "lastPlayTouched",
+      "CONFIG",
+      "progressMap",
+      "rateMap",
+      "rateLimited"
+    ]
+  },
+  {
+    "file": "src/editions/multi/proxy/stream-targets.js",
+    "exports": [
+      "getStreamTargetParts",
+      "matchStreamTarget",
+      "getStreamProxyLocation",
+      "rewritePlaybackStreamUrls"
+    ]
+  },
+  {
+    "file": "src/editions/multi/proxy/pipeline.js",
+    "exports": [
+      "proxyDirectUrl"
+    ]
+  },
+  {
+    "file": "src/editions/multi/storage/schema.js",
+    "exports": [
+      "DEFAULT_USER_ROUTE_LIMIT",
+      "DEFAULT_USER_DNS_TARGET",
+      "USERNAME_RE",
+      "RESERVED_PREFIXES",
+      "RESERVED_SUBDOMAINS",
+      "UPSTREAM_FAILOVER_STATUSES",
+      "CF_ORIGIN_ERROR_STATUSES",
+      "dbReady",
+      "dbInitPromise",
+      "initDatabase",
+      "SCHEMA_ID",
+      "initDatabaseSchema"
+    ]
+  },
+  {
+    "file": "web/multi/pages.js",
+    "exports": [
+      "renderTopLinks",
+      "buildFrontendHtml",
+      "buildLoginHtml",
+      "buildRegisterHtml",
+      "buildAdminHtml"
+    ]
+  },
+  {
+    "file": "src/editions/multi/ui/theme.js",
+    "exports": [
+      "SPEED_TOOLS",
+      "safeHttpUrl"
+    ]
+  },
+  {
+    "file": "src/editions/multi/version.js",
+    "exports": [
+      "CURRENT_VERSION"
+    ]
+  },
+  {
+    "file": "src/editions/personal/config/settings.js",
+    "exports": [
+      "settingsCache",
+      "XFO_CURRENT",
+      "normalizeXfo",
+      "getSettings",
+      "setSetting",
+      "SETTING_KEYS"
+    ]
+  },
+  {
+    "file": "src/editions/personal/admin/api.js",
+    "exports": [
+      "handleAdminApi"
+    ]
+  },
+  {
+    "file": "src/editions/personal/proxy/routes.js",
+    "exports": [
+      "routeCache",
+      "clearRouteCache",
+      "getRoute",
+      "resolveProxyTarget"
+    ]
+  },
+  {
+    "file": "src/editions/personal/integrations/zone.js",
+    "exports": [
+      "getStatsHost",
+      "zoneInfoCache",
+      "resolveZoneInfo",
+      "invalidateZoneInfoCache"
+    ]
+  },
+  {
+    "file": "src/editions/personal/auth/session.js",
+    "exports": [
+      "SESSION_TTL_SEC",
+      "enc",
+      "hmacHex",
+      "safeEqual",
+      "makeSessionToken",
+      "isAdmin",
+      "loginFails",
+      "loginBlocked",
+      "loginFailed",
+      "adminLoginResponse"
+    ]
+  },
+  {
+    "file": "src/editions/personal/entry.js",
+    "exports": [
+      "bingWallpaper",
+      "worker_default"
+    ]
+  },
+  {
+    "file": "src/editions/personal/http/responses.js",
+    "exports": [
+      "applySecurityHeaders",
+      "errResponse"
+    ]
+  },
+  {
+    "file": "src/editions/personal/integrations/analytics.js",
+    "exports": [
+      "cfGetZoneSummary",
+      "cfGetZoneDailySeries",
+      "cfGetWorkerSummary",
+      "buildDailyReport",
+      "sendDailyReport"
+    ]
+  },
+  {
+    "file": "src/editions/personal/integrations/dns.js",
+    "exports": [
+      "createOrUpdateDNSRecord"
+    ]
+  },
+  {
+    "file": "src/editions/personal/integrations/stats.js",
+    "exports": [
+      "handleStatsRequest"
+    ]
+  },
+  {
+    "file": "src/editions/personal/maintenance.js",
+    "exports": [
+      "runHealthCheck",
+      "runScheduled"
+    ]
+  },
+  {
+    "file": "src/editions/personal/relay/protocol.js",
+    "exports": [
+      "normalizeRelayBase",
+      "relayPortFrom",
+      "relayConfigCache",
+      "RELAY_CACHE_TTL",
+      "invalidateRelayCache",
+      "getRelayConfig",
+      "hmacSha256Hex",
+      "relayFetchHeaders"
+    ]
+  },
+  {
+    "file": "src/editions/personal/proxy/state.js",
+    "exports": [
+      "hostDownUntil",
+      "lastPlayTouched",
+      "fallbackLogAt",
+      "fallbackLogThrottled",
+      "CONFIG",
+      "progressMap",
+      "rateMap",
+      "rateLimited"
+    ]
+  },
+  {
+    "file": "src/editions/personal/proxy/pipeline.js",
+    "exports": [
+      "CACHE_STRIP_PARAMS",
+      "cacheKeyUrl",
+      "proxyDirectUrl"
+    ]
+  },
+  {
+    "file": "src/editions/personal/storage/schema.js",
+    "exports": [
+      "dbReady",
+      "dbInitPromise",
+      "initDatabase",
+      "SCHEMA_ID",
+      "initDatabaseSchema"
+    ]
+  },
+  {
+    "file": "web/personal/pages.js",
+    "exports": [
+      "buildFrontendHtml",
+      "buildAdminHtml"
+    ]
+  },
+  {
+    "file": "src/editions/personal/ui/theme.js",
+    "exports": [
+      "SPEED_TOOLS",
+      "LANDING_CSS"
+    ]
+  },
+  {
+    "file": "src/editions/personal/version.js",
+    "exports": [
+      "CURRENT_VERSION"
+    ]
+  },
+  {
+    "file": "src/shared/admin/api.js",
+    "exports": [
+      "normalizePrefix",
+      "splitTargets",
+      "normalizeDnsTarget",
+      "validatePrefix",
+      "readJson",
+      "ROUTE_CACHE_TTL"
+    ]
+  },
+  {
+    "file": "src/shared/auth/session.js",
+    "exports": [
+      "getCookie",
+      "getAdminToken",
+      "envStr",
+      "getBaseDomain",
+      "getDnsRecordName",
+      "toFqdn",
+      "getCFApiToken",
+      "getTelegramToken",
+      "getTelegramChatId",
+      "findZoneForHost",
+      "SESSION_COOKIE",
+      "toHex",
+      "LOGIN_MAX_FAILS",
+      "LOGIN_WINDOW_MS",
+      "logoutResponse"
+    ]
+  },
+  {
+    "file": "src/shared/integrations/notifications.js",
+    "exports": [
+      "notify"
+    ]
+  },
+  {
+    "file": "src/shared/observability/audit.js",
+    "exports": [
+      "auditLog"
+    ]
+  },
+  {
+    "file": "src/shared/http/primitives.js",
+    "exports": [
+      "DEFAULT_OPTIMIZED_DOMAINS",
+      "RESERVED_ALIASES",
+      "DOMAIN_PROXY_RULES",
+      "JP_COLOS",
+      "SECURITY_HEADERS",
+      "DROP_REQUEST_HEADERS",
+      "CLIENT_IDENTITY_HEADERS",
+      "IP_MODES",
+      "normalizeIpMode",
+      "stripClientIdentityHeaders",
+      "DROP_RESPONSE_HEADERS",
+      "REQUEST_PATTERNS",
+      "PROGRESS_THROTTLE_MS",
+      "PROGRESS_MAP_MAX",
+      "CORS_JSON",
+      "classifyRequest",
+      "isCacheableRequest",
+      "formatBytes",
+      "getShanghaiParts",
+      "getResponseBytes",
+      "toGraphQLStr"
+    ]
+  },
+  {
+    "file": "src/shared/http/responses.js",
+    "exports": [
+      "sanitizeResponseHeaders",
+      "json",
+      "html"
+    ]
+  },
+  {
+    "file": "src/shared/http/validation.js",
+    "exports": [
+      "probeTarget",
+      "FORBIDDEN_CUSTOM_HEADERS",
+      "parseHeaderLines",
+      "parseIpList",
+      "ipv4ToInt",
+      "ipMatches",
+      "validIpList",
+      "cachedJson",
+      "isPrivateHost",
+      "directProxyAllowed",
+      "isValidHttpUrl",
+      "getClientCacheKey"
+    ]
+  },
+  {
+    "file": "src/shared/integrations/analytics.js",
+    "exports": [
+      "cfFetchGraphql",
+      "cfGetZoneAnalytics",
+      "cfGetWorkerRequests",
+      "dayRangeIso",
+      "tgEscape",
+      "describeTelegramError",
+      "sendTelegramMessage",
+      "reportFailureHint",
+      "claimReportSlot"
+    ]
+  },
+  {
+    "file": "src/shared/integrations/dns.js",
+    "exports": [
+      "getOptimizedDomains",
+      "addOptimizedDomain",
+      "normalizeDomain",
+      "updateOptimizedDomain",
+      "deleteOptimizedDomain",
+      "getDNSConfig",
+      "saveDNSConfig",
+      "cloudflareAPICall",
+      "getZones",
+      "getDNSRecords",
+      "detectRecordType"
+    ]
+  },
+  {
+    "file": "src/shared/integrations/stats.js",
+    "exports": [
+      "getEdgeInfo"
+    ]
+  },
+  {
+    "file": "src/shared/proxy/pipeline.js",
+    "exports": [
+      "SENSITIVE_REQ_HEADERS",
+      "HOST_DOWN_MS",
+      "LAST_PLAY_THROTTLE_MS",
+      "API_TIMEOUT_MS",
+      "FALLBACK_LOG_MS",
+      "buildUpstreamHeaders",
+      "progressKeyOf"
+    ]
+  },
+  {
+    "file": "src/shared/rules/netdisk.js",
+    "exports": [
+      "MANUAL_REDIRECT_DOMAINS"
+    ]
+  },
+  {
+    "file": "src/shared/ui/theme.js",
+    "exports": [
+      "PAGE_STYLE",
+      "THEME_INIT",
+      "THEME_LOGIC",
+      "PALETTE_MATH",
+      "DYN_PALETTE"
+    ]
+  }
+]

@@ -32,3 +32,10 @@ backup/
 Thumbs.db
 .idea/
 .vscode/
+
+# Refactor build and isolated local acceptance data
+dist/
+.local/
+playwright-report/
+test-results/
+coverage/
