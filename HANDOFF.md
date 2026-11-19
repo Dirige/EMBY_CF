@@ -64,11 +64,11 @@ npm test
 
 预期：
 
-- `personal: 219175 bytes`，sha256 以 `743f0ade…` 开头
-- `multi: 330499 bytes`，sha256 以 `984683c6…` 开头
+- `personal: 218905 bytes`，sha256 `9a3b56e9e3751a81…`
+- `multi: 330175 bytes`，sha256 `5368c12ef79eb9ea…`
 - `# tests 42`、`# pass 42`、`# fail 0`
 
-完整哈希以 `dist/manifest.json` 为准。构建产物不提交，重新生成即可。
+完整哈希以 `dist/manifest.json` 为准。构建产物不提交，重新生成即可。构建已做路径无关处理：同样的源码在不同目录、不同机器上会得到相同哈希（`scripts/build.mjs` 使用相对虚拟模块 id）。
 
 浏览器验收：
 

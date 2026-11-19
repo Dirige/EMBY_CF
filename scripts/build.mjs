@@ -6,8 +6,17 @@ export const root = path.resolve(import.meta.dirname, '..');
 export const textAssets = {
   name: 'editable-text-assets',
   setup(build) {
-    build.onResolve({ filter: /\?text$/ }, args => ({ path: path.resolve(args.resolveDir, args.path.slice(0, -5)), namespace: 'text-asset' }));
-    build.onLoad({ filter: /.*/, namespace: 'text-asset' }, async args => ({ contents: await readFile(args.path, 'utf8'), loader: 'text', watchFiles: [args.path] }));
+    // Keep the virtual module id relative to the repository. esbuild embeds it
+    // in the output, so an absolute checkout path would make identical sources
+    // produce different bundles on different machines.
+    build.onResolve({ filter: /\?text$/ }, args => {
+      const absolute = path.resolve(args.resolveDir, args.path.slice(0, -5));
+      return { path: path.relative(root, absolute), namespace: 'text-asset' };
+    });
+    build.onLoad({ filter: /.*/, namespace: 'text-asset' }, async args => {
+      const absolute = path.resolve(root, args.path);
+      return { contents: await readFile(absolute, 'utf8'), loader: 'text', watchFiles: [absolute], resolveDir: path.dirname(absolute) };
+    });
   },
 };
 export async function bundle(entry, outfile, extra = {}) {
