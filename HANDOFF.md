@@ -180,7 +180,7 @@ git clone EMBY_CF.bundle EMBY_CF-restored
 归档文件与校验值放在归档同级目录：
 
 ```bash
-sha256sum -c emby-refactor-handoff-*.tar.zst.sha256
+sha256sum -c emby-refactor-handoff-*.tar.gz.sha256
 ```
 
 解包后先读本文件，再执行第 2、3 节命令。若归档中 `dist/` 不存在，属正常（构建产物未提交），`npm run build` 会生成。
