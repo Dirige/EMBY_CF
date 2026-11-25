@@ -4,7 +4,7 @@ import { readFile, access } from 'node:fs/promises';
 import path from 'node:path';
 import { repoRoot, guides, offlineDocument, inlineLocalImage } from '../scripts/build-docs.mjs';
 
-const maintainedDocs = ['README.md', 'DEPLOY.md', 'personal/README.md', 'relay/README.md', 'docs/UPGRADE.md', ...guides.map(g => g.file)];
+const maintainedDocs = ['README.md', 'DEPLOY.md', 'personal/README.md', 'relay/README.md', 'docs/UPGRADE.md', 'docs/CHANGELOG.md', ...guides.map(g => g.file)];
 
 test('deployment docs: all maintained relative Markdown links and images exist', async () => {
   for (const name of maintainedDocs) {
