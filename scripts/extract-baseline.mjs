@@ -29,7 +29,7 @@ function bindingNames(node) {
   if (ts.isVariableStatement(node)) return node.declarationList.declarations.map(d => d.name).filter(ts.isIdentifier).map(d => d.text);
   return [];
 }
-for (const [edition, baseline] of Object.entries({ personal: 'personal/worker.js', multi: 'worker.js' })) {
+for (const [edition, baseline] of Object.entries({ personal: 'tests/baselines/personal-worker.js', multi: 'tests/baselines/multi-worker.js' })) {
   const filename = `/baseline/${edition}.js`;
   const source = normalize(await readFile(path.join(root, baseline), 'utf8'), filename);
   const options = { allowJs: true, noLib: true, noResolve: true, target: ts.ScriptTarget.Latest, module: ts.ModuleKind.ESNext };

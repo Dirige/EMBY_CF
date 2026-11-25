@@ -36,7 +36,7 @@ function getStreamProxyLocation(request, target, targets, routePath) {
     return new URL(request.url).origin + routePath + "/__stream/" + match.index + target.pathname.slice(match.base.length) + target.search + target.hash;
 }
 
-function rewritePlaybackStreamUrls(data, request, targets, routePath, upstreamUrl) {
+function rewritePlaybackStreamUrls(data, request, targets, routePath, upstreamUrl, onMapped = undefined) {
     let changed = false;
     const rewrite = (obj, key) => {
         const value = obj && obj[key];
@@ -48,6 +48,7 @@ function rewritePlaybackStreamUrls(data, request, targets, routePath, upstreamUr
             if (location && location !== value) {
                 obj[key] = location;
                 changed = true;
+                onMapped?.(target);
             }
         }
         catch {

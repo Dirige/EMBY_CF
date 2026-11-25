@@ -69,6 +69,7 @@ var worker_default = {
             return json({ baseDomain: getBaseDomain(env2) || "yourdomain.com" });
         }
         if (url.pathname === "/admin/api/login" && request.method === "POST") {
+            if (request.headers.get('Origin') && request.headers.get('Origin') !== url.origin) return json({ ok: false, error: 'Forbidden origin' }, 403);
             try {
                 const body = await readJson(request) || {};
                 return adminLoginResponse(request, env2, body);
@@ -78,6 +79,7 @@ var worker_default = {
             }
         }
         if (url.pathname === "/api/register" && request.method === "POST") {
+            if (request.headers.get('Origin') && request.headers.get('Origin') !== url.origin) return json({ ok: false, error: 'Forbidden origin' }, 403);
             try {
                 return await handleRegister(request, env2);
             }
@@ -85,8 +87,10 @@ var worker_default = {
                 return json({ ok: false, error: "\u6CE8\u518C\u5931\u8D25: " + String(e?.message || e).slice(0, 160) }, 500);
             }
         }
-        if (url.pathname === "/api/logout" && request.method === "POST")
+        if (url.pathname === "/api/logout" && request.method === "POST") {
+            if (request.headers.get('Origin') && request.headers.get('Origin') !== url.origin) return json({ ok: false, error: 'Forbidden origin' }, 403);
             return logoutResponse();
+        }
         if (url.pathname === "/register" || url.pathname === "/register/") {
             const res = html(buildRegisterHtml(env2));
             res.headers.set("X-Robots-Tag", "noindex, nofollow");

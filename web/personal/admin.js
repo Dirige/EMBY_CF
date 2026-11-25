@@ -91,14 +91,14 @@ function renderRoutes(list) {
       '</div>' +
       '<div class="target-list">' + targetsHtml + '</div>' +
       '<div class="route-meta">' +
+        (r.notification_id ? '<span class="meta-tag">通知编号：' + esc(r.notification_id) + '</span>' : '') +
         (disabled ? '<span class="meta-tag" style="color:var(--warn);border-color:var(--warn-dim)">⏸ 已停用</span>' : '') +
         (r.down_count ? '<span class="meta-tag" style="color:var(--warn);border-color:var(--warn-dim)">🔴 ' + r.down_count + ' 条线路异常</span>' : '') +
         (cacheStatus ? '<span class="meta-tag">🖼️ 缓存开启</span>' : '<span class="meta-tag">缓存关闭</span>') +
         (compatStatus ? '<span class="meta-tag" style="color:var(--warn);border-color:var(--warn-dim)">🔧 兼容模式</span>' : '') +
         (r.ip_mode === 'strip' ? '<span class="meta-tag" style="color:var(--info);border-color:var(--info-dim)">🛡️ IP不透传</span>' : '') +
         (r.ip_mode === 'disable' ? '<span class="meta-tag" style="color:var(--ok);border-color:var(--ok-dim)">🛡️ IP彻底隐藏</span>' : '') +
-        (r.use_relay === 'on' ? '<span class="meta-tag" style="color:var(--info);border-color:var(--info-dim)">🖥️ VPS中继</span>' : '') +
-        (r.use_relay === 'image' ? '<span class="meta-tag" style="color:var(--info);border-color:var(--info-dim)">🖼️ 视频直连·其余走VPS</span>' : '') +
+        '<span class="meta-tag">VPS 中继：' + (r.use_relay === 'on' ? '开' : r.use_relay === 'off' ? '关' : '自动') + '</span>' +
         (r.last_play ? '<span class="meta-tag">📺 ' + esc(r.last_play) + '</span>' : '') +
       '</div>' +
       '<div class="route-actions">' +
@@ -169,9 +169,12 @@ async function importConfig(input) {
   const f = input.files && input.files[0];
   input.value = '';
   if (!f) return;
+  if (f.size > 2 * 1024 * 1024) { showToast('配置文件不能超过 2 MiB，请分批导入'); return; }
   let data;
   try { data = JSON.parse(await f.text()); } catch (e) { showToast('不是合法的 JSON 文件'); return; }
-  if (!confirm('导入将按路径覆盖同名路由，并追加不存在的优选域名，确定继续？')) return;
+  const preview = await postJson('/admin/api/import/preview', data);
+  if (!preview.ok || !preview.data.canImport) { showToast(preview.data.error || '预检发现无效或重复线路，请修正配置后重试'); return; }
+  if (!confirm('只读预检完成：新增 ' + preview.data.added.length + ' 条，覆盖 ' + preview.data.overwritten.length + ' 条；设置项 ' + preview.data.settings.length + ' 个。导入后将修改本地配置，确定继续？')) return;
   const x = await postJson('/admin/api/import', data);
   if (!x.ok) { showToast(x.data.error || '导入失败'); return; }
   showToast('导入完成：路由 ' + x.data.routes + '，域名 ' + x.data.domains + (x.data.skipped.length ? '，跳过 ' + x.data.skipped.length : ''));
@@ -184,6 +187,7 @@ async function openSettings() {
   const s = d.settings || {};
   document.getElementById('setHealth').checked = s.health_check === '1';
   document.getElementById('setDailyReport').checked = String(s.tg_daily_report ?? '1') !== '0';
+  document.getElementById('setRouteAlerts').checked = String(s.tg_route_alerts ?? '1') !== '0';
   document.getElementById('setRate').value = s.rate_limit_per_min || '0';
   document.getElementById('setXfo').value = s.x_frame_options || '';
   document.getElementById('setManual').value = s.manual_redirect_domains || '';
@@ -191,15 +195,75 @@ async function openSettings() {
   const n = d.notify || {};
   document.getElementById('notifyHint').textContent = (n.telegram || n.webhook)
     ? '通知渠道：' + [n.telegram ? 'Telegram' : '', n.webhook ? 'Webhook' : ''].filter(Boolean).join(' + ')
-      + '（Token: ' + (n.tokenVar || '—') + '，Chat: ' + (n.chatVar || '—') + '）'
-    : '尚未配置通知：请设置 TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID（兼容 TG_*），或 NOTIFY_WEBHOOK';
+    : '尚未配置通知，请在下方填写 Telegram 配置';
+  renderTelegramStatus(n);
+  ['tgBotToken', 'currentPassword', 'newPassword', 'confirmPassword'].forEach(id => { document.getElementById(id).value = ''; });
   openModal('modalSettings');
+}
+
+function renderTelegramStatus(n) {
+  document.getElementById('tgChatId').value = n.chatId || '';
+  document.getElementById('tgBotToken').placeholder = n.tokenConfigured ? 'Token 已配置（留空保持不变）' : '填写 Bot Token';
+  document.getElementById('tgConfigStatus').textContent = n.error || ('来源：' + ({ web: '网页加密配置', environment: 'Worker 环境变量', disabled: '已停用' }[n.source] || '未知') + (n.encryptionReady ? ' · 加密主密钥已就绪' : ' · 网页保存前需配置 SETTINGS_ENCRYPTION_KEY'));
+  document.getElementById('tgLastStatus').textContent = n.last ? '最近通知：' + n.last.at + ' · ' + (n.last.ok ? '成功' : '失败') + '（' + n.last.kind + '）' : '暂无发送记录';
+}
+
+async function saveTelegram(btn) {
+  btn.disabled = true;
+  try {
+    const x = await postJson('/admin/api/notifications', { token: document.getElementById('tgBotToken').value, chatId: document.getElementById('tgChatId').value });
+    if (!x.ok) { showToast(x.data.error || '保存失败'); return; }
+    document.getElementById('tgBotToken').value = '';
+    renderTelegramStatus(x.data);
+    showToast('TG 配置已加密保存');
+  } catch { showToast('请求失败，请检查连接'); } finally { btn.disabled = false; }
+}
+
+async function testTelegramConfig(btn) {
+  if (document.getElementById('tgBotToken').value) { showToast('请先保存 TG 配置再测试'); return; }
+  btn.disabled = true;
+  try {
+    const x = await postJson('/admin/api/notifications/test', {});
+    showToast(x.ok ? '测试通知已发送' : x.data.error || '发送失败');
+    const r = await fetch('/admin/api/notifications');
+    if (r.ok) renderTelegramStatus(await r.json());
+  } catch { showToast('请求失败，请检查连接'); } finally { btn.disabled = false; }
+}
+
+async function clearTelegram(btn) {
+  if (!confirm('确定清除并停用 Telegram？不会回退使用 Worker 环境变量。Webhook 不受影响。')) return;
+  btn.disabled = true;
+  try {
+    const x = await postJson('/admin/api/notifications', { clear: true });
+    if (!x.ok) { showToast(x.data.error || '清除失败'); return; }
+    document.getElementById('tgBotToken').value = '';
+    renderTelegramStatus(x.data);
+    showToast('Telegram 已停用');
+  } catch { showToast('请求失败，请检查连接'); } finally { btn.disabled = false; }
+}
+
+async function updatePassword(btn) {
+  const currentPassword = document.getElementById('currentPassword').value;
+  const newPassword = document.getElementById('newPassword').value;
+  const confirmPassword = document.getElementById('confirmPassword').value;
+  if (newPassword.length < 12 || newPassword.length > 128 || newPassword !== confirmPassword) { showToast('新密码须为 12–128 个字符且两次一致'); return; }
+  if (!confirm('修改后所有旧会话都会失效，确定继续？')) return;
+  btn.disabled = true;
+  try {
+    const x = await postJson('/admin/api/security/password', { currentPassword, newPassword, confirmPassword });
+    if (!x.ok) { showToast(x.data.error || '修改失败'); return; }
+    location.href = '/';
+  } catch { showToast('请求失败，请检查连接'); } finally {
+    ['currentPassword', 'newPassword', 'confirmPassword'].forEach(id => { document.getElementById(id).value = ''; });
+    btn.disabled = false;
+  }
 }
 
 async function saveSettings() {
   const x = await postJson('/admin/api/settings', {
     health_check: document.getElementById('setHealth').checked ? '1' : '0',
     tg_daily_report: document.getElementById('setDailyReport').checked ? '1' : '0',
+    tg_route_alerts: document.getElementById('setRouteAlerts').checked ? '1' : '0',
     rate_limit_per_min: document.getElementById('setRate').value || '0',
     x_frame_options: document.getElementById('setXfo').value || '',
     manual_redirect_domains: document.getElementById('setManual').value.trim(),
@@ -219,6 +283,9 @@ async function runNow() {
 }
 
 var AUDIT_ACTIONS = {
+  'notification.save': '修改通知配置',
+  'notification.test': '测试通知',
+  'security.password': '修改登录密码',
   settings: '修改设置',
   'report.send': '发送日报',
   import: '导入配置',
@@ -313,7 +380,7 @@ function openRouteModal() {
   document.getElementById('routeTarget').value = '';
   document.getElementById('routeCache').checked = true;
   document.getElementById('routeCompat').checked = false;
-  document.getElementById('routeRelayMode').value = 'off';
+  document.getElementById('routeRelayMode').value = 'auto';
   document.getElementById('routeIpMode').value = 'forward';
   document.getElementById('routeHeaders').value = '';
   document.getElementById('routeIpAllow').value = '';
@@ -332,7 +399,7 @@ function editRoute(prefix) {
   document.getElementById('routeTarget').value = String(r.target || '').split(',').map(function(x) { return x.trim(); }).filter(Boolean).join('\n');
   document.getElementById('routeCache').checked = r.cache_img !== 'off';
   document.getElementById('routeCompat').checked = r.compat_mode === 'on';
-  document.getElementById('routeRelayMode').value = (r.use_relay === 'on' || r.use_relay === 'image') ? r.use_relay : 'off';
+  document.getElementById('routeRelayMode').value = ['on', 'off'].includes(r.use_relay) ? r.use_relay : 'auto';
   document.getElementById('routeIpMode').value = (r.ip_mode === 'strip' || r.ip_mode === 'disable') ? r.ip_mode : 'forward';
   document.getElementById('routeHeaders').value = r.custom_headers || '';
   document.getElementById('routeIpAllow').value = r.ip_allow || '';
@@ -348,7 +415,7 @@ async function saveRoute() {
   let prefix = document.getElementById('routePrefix').value.trim(); while(prefix.startsWith('/')) prefix = prefix.slice(1); while(prefix.endsWith('/')) prefix = prefix.slice(0,-1);
   const cache_img = document.getElementById('routeCache').checked ? 'on' : 'off';
   const compat_mode = document.getElementById('routeCompat').checked ? 'on' : 'off';
-  const use_relay = document.getElementById('routeRelayMode').value || 'off';
+  const use_relay = document.getElementById('routeRelayMode').value || 'auto';
   const ip_mode = document.getElementById('routeIpMode').value || 'forward';
   const target = document.getElementById('routeTarget').value.split(/[\r\n,]+/).map(function(s) { return s.trim(); }).filter(Boolean).join(',');
 

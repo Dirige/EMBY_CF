@@ -1,5 +1,5 @@
 // Development-only. This file must never be reachable from production entries.
-import { PAGE_STYLE, THEME_INIT } from '../shared/ui/theme.js';
+import { buildFrontendHtml } from '../../web/personal/pages.js';
 import { SESSION_COOKIE } from '../shared/auth/session.js';
 const localNames = new Set(['127.0.0.1', 'localhost', '[::1]']);
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' } });
@@ -71,8 +71,8 @@ export function createLocalPreview({ edition, handler, initDatabase, memberCooki
         headers.set('Set-Cookie', localCookie(response.headers.get('Set-Cookie')));
         return new Response(null, { status: 303, headers });
       }
-      if (url.pathname === '/__preview' || url.pathname === '/__preview/') {
-        return new Response(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Emby 重构 · 本地验收</title><script>${THEME_INIT}</script><style>${PAGE_STYLE}</style></head><body><main class="container" style="max-width:720px;padding-top:12vh"><section class="card"><div class="sec-title">LOCAL ACCEPTANCE <span class="chip">${edition.toUpperCase()}</span></div><h1 style="margin-bottom:14px">原来的毛玻璃，全新的结构。</h1><p class="muted">${edition === 'personal' ? '个人版' : '多人版'} · 独立本地数据库 · 无生产凭据 · 外部请求被阻断</p><p style="margin:24px 0">可以验收主题、路由编辑、设置、日志${edition === 'multi' ? '、用户与邀请及普通用户视图' : '和中继表单'}。数据均为明确标注的本地测试数据；不代表真实播放或 Cloudflare 统计。</p><form method="post" action="/__preview/login"><button class="btn btn-solid" type="submit">进入${edition === 'multi' ? '管理员' : '个人版'}工作区</button></form>${edition === 'multi' ? '<form method="post" action="/__preview/login?role=member" style="margin-top:12px"><button class="btn" type="submit">验收普通用户视图</button></form>' : ''}<p class="muted" style="margin-top:26px">请勿填写生产 Token、Cookie、证书或真实媒体地址。</p><a class="btn btn-sm" style="margin-top:18px" href="http://127.0.0.1:${edition === 'personal' ? '4274' : '4273'}/__preview">切换到${edition === 'personal' ? '多人版' : '个人版'} →</a></section></main></body></html>`, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
+      if (url.pathname === '/' || url.pathname === '/__preview' || url.pathname === '/__preview/') {
+        return new Response(buildFrontendHtml(true, { previewEdition: edition }), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
       }
       if (url.pathname === '/bing-wallpaper') {
         // A self-contained local illustration, never a downloaded media/image asset.
@@ -80,7 +80,7 @@ export function createLocalPreview({ edition, handler, initDatabase, memberCooki
       }
       const response = withLocalCookie(await handler.fetch(withPreviewSession(request), env, ctx));
       if (!response.headers.get('Content-Type')?.includes('text/html')) return response;
-      const html = (await response.text()).replace('</body>', `<aside class="local-preview-notice" style="position:fixed;bottom:10px;left:50%;transform:translateX(-50%);z-index:99999;max-width:95vw;padding:8px 16px;border:1px solid var(--accent-line);border-radius:99px;background:var(--surface);backdrop-filter:blur(18px);color:var(--text);font-size:11px;text-align:center">本地重构预览 · 测试数据 · 未部署线上 · <a href="/__preview" style="color:var(--accent)">切换身份</a></aside></body>`);
+      const html = (await response.text()).replace('</body>', `<aside class="local-preview-notice" style="position:relative;z-index:1;width:fit-content;max-width:calc(100% - 28px);margin:20px auto;padding:8px 16px;border:1px solid var(--accent-line);border-radius:12px;background:var(--surface);backdrop-filter:blur(18px);color:var(--text);font-size:11px;text-align:center">本地重构预览 · 测试数据 · 未部署线上 · <a href="/__preview" style="color:var(--accent)">切换身份</a></aside></body>`);
       const headers = new Headers(response.headers); headers.delete('Content-Length');
       return new Response(html, { status: response.status, headers });
     },

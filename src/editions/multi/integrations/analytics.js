@@ -4,6 +4,7 @@ import { cfFetchGraphql, cfGetWorkerRequests, cfGetZoneAnalytics, dayRangeIso, s
 import { getStatsHost, getUserDomain, resolveZoneInfo } from "./zone.js";
 import { envStr, getCFApiToken } from "./../../../shared/auth/session.js";
 import { isValidHttpUrl } from "./../../../shared/http/validation.js";
+import { notificationEnv, recordNotification } from '../config/notifications.js';
 
 async function cfGetAccountHttp(cfAccountId, cfApiToken, startIso, endIso, useHostDim = true) {
     const dims = useHostDim ? "datetimeHour clientRequestHTTPHost" : "datetimeHour";
@@ -47,12 +48,13 @@ async function getWorkerHosts(env2) {
 function makeHostMatcher(env2, hostSet) {
     const userDomain = String(getUserDomain(env2) || "").toLowerCase();
     const main = String(getStatsHost(env2) || "").toLowerCase();
+    const explicit = hostSet ? new Set([...hostSet].map(host => String(host).trim().toLowerCase().replace(/:\d+$/, ''))) : null;
     return (raw) => {
         const h = String(raw || "").toLowerCase().replace(/:\d+$/, "");
         if (!h)
             return false;
-        if (hostSet && hostSet.has(h))
-            return true;
+        // An explicit per-user set must not expand to every tenant subdomain.
+        if (explicit) return explicit.has(h);
         if (main && h === main)
             return true;
         if (userDomain && (h === userDomain || h.endsWith("." + userDomain)))
@@ -62,6 +64,7 @@ function makeHostMatcher(env2, hostSet) {
 }
 
 async function cfGetZoneSummary(env2, dateKey, hostSet = null) {
+    if (hostSet && !hostSet.size) return { error: '未配置统计域名范围' };
     const token = getCFApiToken(env2);
     if (!token)
         return { error: "\u672A\u914D\u7F6E CF_API_TOKEN" };
@@ -82,6 +85,7 @@ async function cfGetZoneSummary(env2, dateKey, hostSet = null) {
         zone = await cfGetZoneAnalytics(info3.zoneId, token, start, end, true);
     }
     catch (e) {
+        if (hostSet) return { error: 'CF 未提供指定域名的统计维度' };
         firstError = String(e?.message || e);
         hostDim = false;
         try {
@@ -93,6 +97,8 @@ async function cfGetZoneSummary(env2, dateKey, hostSet = null) {
     }
     if (!zone?.series)
         return { error: "CF \u672A\u8FD4\u56DE\u6570\u636E\uFF08Token \u53EF\u80FD\u7F3A\u5C11 Analytics:Read \u6743\u9650\uFF09" };
+    if (hostSet && !hostDim) return { error: 'CF 未提供指定域名的统计维度' };
+    if (hostSet && zone.series.length >= 1e4) return { error: 'CF 指定域名统计查询达到上限，无法安全汇总' };
     const statsHost = getStatsHost(env2);
     const wanted = hostSet && hostSet.size ? makeHostMatcher(env2, hostSet) : statsHost ? makeHostMatcher(env2, /* @__PURE__ */ new Set([statsHost])) : null;
     const matches = /* @__PURE__ */ (item) => {
@@ -105,7 +111,8 @@ async function cfGetZoneSummary(env2, dateKey, hostSet = null) {
     let useRows = rows;
     if (hostDim && wanted && rows.length === 0) {
         hostMatched = false;
-        useRows = hostSet ? [] : zone.series;
+        if (hostSet) return { error: 'CF 未返回指定域名的数据', hostDim, hostMatched };
+        useRows = zone.series;
     }
     const sumRows = /* @__PURE__ */ (list) => {
         let requests = 0, visits = 0, bytes = 0;
@@ -125,7 +132,7 @@ async function cfGetZoneSummary(env2, dateKey, hostSet = null) {
         return { requests, visits, bytes, hourly };
     };
     const total = sumRows(useRows);
-    const mainRows = hostDim && statsHost ? zone.series.filter((it) => String(it?.dimensions?.clientRequestHTTPHost || "").toLowerCase() === statsHost) : useRows;
+    const mainRows = hostDim && statsHost ? useRows.filter((it) => String(it?.dimensions?.clientRequestHTTPHost || "").toLowerCase() === statsHost) : useRows;
     const main = sumRows(mainRows);
     return {
         requests: total.requests,
@@ -145,7 +152,8 @@ async function cfGetZoneSummary(env2, dateKey, hostSet = null) {
     };
 }
 
-async function cfGetZoneDailySeries(env2, days = 7) {
+async function cfGetZoneDailySeries(env2, days = 7, hostSet = null) {
+    if (hostSet && !hostSet.size) return { error: '未配置统计域名范围', series: [] };
     const token = getCFApiToken(env2);
     if (!token)
         return { error: "\u672A\u914D\u7F6E CF_API_TOKEN" };
@@ -169,7 +177,7 @@ async function cfGetZoneDailySeries(env2, days = 7) {
     };
     let rows = null;
     let hostFilterUsed = false;
-    if (statsHost) {
+    if (statsHost && !hostSet) {
         try {
             const zone = await cfFetchGraphql(token, buildQuery(statsHost));
             const r = zone?.data?.viewer?.zones?.[0]?.series;
@@ -194,11 +202,13 @@ async function cfGetZoneDailySeries(env2, days = 7) {
     }
     if (!Array.isArray(rows))
         return { error: "CF \u672A\u8FD4\u56DE\u6570\u636E" };
+    if (hostSet && rows.length >= 1e4) return { error: 'CF 指定域名统计查询达到上限，无法安全汇总', series: [] };
+    const wanted = hostSet ? makeHostMatcher(env2, hostSet) : null;
     const map = /* @__PURE__ */ new Map();
     let hostMatched = hostFilterUsed;
     for (const item of rows) {
         const h = String(item?.dimensions?.clientRequestHTTPHost || "").toLowerCase();
-        if (statsHost && h !== statsHost)
+        if (wanted ? !wanted(h) : statsHost && h !== statsHost)
             continue;
         hostMatched = true;
         const raw = item?.dimensions?.datetimeHour;
@@ -211,6 +221,7 @@ async function cfGetZoneDailySeries(env2, days = 7) {
         cur.visits += Number(item?.sum?.visits) || 0;
         map.set(dateKey, cur);
     }
+    if (hostSet && !hostMatched) return { error: 'CF 未返回指定域名的数据', series: [] };
     if (statsHost && !hostMatched)
         return { error: "CF \u4E2D\u672A\u627E\u5230 " + statsHost + " \u7684\u6570\u636E", series: [] };
     const series = [];
@@ -223,6 +234,7 @@ async function cfGetZoneDailySeries(env2, days = 7) {
 }
 
 async function cfGetAccountSummary(env2, dateKey, hostSet = null) {
+    if (hostSet && !hostSet.size) return { error: '未配置统计域名范围' };
     const token = getCFApiToken(env2);
     if (!token)
         return { error: "\u672A\u914D\u7F6E CF_API_TOKEN" };
@@ -243,6 +255,7 @@ async function cfGetAccountSummary(env2, dateKey, hostSet = null) {
         account = await cfGetAccountHttp(info3.accountId, token, start, end, true);
     }
     catch (e) {
+        if (hostSet) return { error: 'CF 未提供指定域名的统计维度' };
         firstError = String(e?.message || e);
         hostDim = false;
         try {
@@ -254,7 +267,9 @@ async function cfGetAccountSummary(env2, dateKey, hostSet = null) {
     }
     if (!account?.series)
         return { error: "\u8D26\u53F7\u5206\u6790\u672A\u8FD4\u56DE\u6570\u636E\uFF08Token \u9700 Account Analytics:Read \u6743\u9650\uFF09" };
+    if (hostSet && !hostDim) return { error: 'CF 未提供指定域名的统计维度' };
     if (hostDim && account.series.length >= 1e4) {
+        if (hostSet) return { error: 'CF 指定域名统计查询达到上限，无法安全汇总' };
         try {
             const plain = await cfGetAccountHttp(info3.accountId, token, start, end, false);
             if (Array.isArray(plain?.series)) {
@@ -271,7 +286,7 @@ async function cfGetAccountSummary(env2, dateKey, hostSet = null) {
     let rows = hostDim && wanted ? account.series.filter((it) => wanted(it?.dimensions?.clientRequestHTTPHost)) : account.series;
     if (hostDim && wanted && rows.length === 0) {
         hostMatched = false;
-        rows = account.series;
+        return { error: 'CF 未返回指定域名的数据', hostDim, hostMatched };
     }
     const sumRows = /* @__PURE__ */ (list) => {
         let requests = 0, visits = 0, bytes = 0;
@@ -301,7 +316,7 @@ async function cfGetAccountSummary(env2, dateKey, hostSet = null) {
         return { requests, visits, bytes, hourly, byHost };
     };
     const total = sumRows(rows);
-    const mainRows = hostDim && statsHost ? account.series.filter((it) => String(it?.dimensions?.clientRequestHTTPHost || "").toLowerCase().replace(/:\d+$/, "") === statsHost) : rows;
+    const mainRows = hostDim && statsHost ? rows.filter((it) => String(it?.dimensions?.clientRequestHTTPHost || "").toLowerCase().replace(/:\d+$/, "") === statsHost) : rows;
     const main = sumRows(mainRows);
     return {
         requests: total.requests,
@@ -323,6 +338,7 @@ async function cfGetAccountSummary(env2, dateKey, hostSet = null) {
 }
 
 async function cfGetAccountDailySeries(env2, days = 7, hostSet = null) {
+    if (hostSet && !hostSet.size) return { error: '未配置统计域名范围', series: [] };
     const token = getCFApiToken(env2);
     if (!token)
         return { error: "\u672A\u914D\u7F6E CF_API_TOKEN" };
@@ -349,6 +365,7 @@ async function cfGetAccountDailySeries(env2, days = 7, hostSet = null) {
     catch (_) {
     }
     if (!Array.isArray(rows) || truncated) {
+        if (hostSet) return { error: 'CF 指定域名统计维度不可用或达到查询上限', series: [] };
         try {
             const acc = await cfGetAccountHttp(info3.accountId, token, start, end, false);
             rows = Array.isArray(acc?.series) ? acc.series : null;
@@ -360,10 +377,12 @@ async function cfGetAccountDailySeries(env2, days = 7, hostSet = null) {
     if (!Array.isArray(rows))
         return { error: "\u8D26\u53F7\u5206\u6790\u672A\u8FD4\u56DE\u6570\u636E" };
     const wanted = hostSet && hostSet.size ? makeHostMatcher(env2, hostSet) : null;
+    if (wanted && !rows.some(item => item?.dimensions?.clientRequestHTTPHost)) return { error: 'CF 未提供指定域名的统计维度', series: [] };
+    if (wanted && !rows.some(item => wanted(item?.dimensions?.clientRequestHTTPHost))) return { error: 'CF 未返回指定域名的数据', series: [] };
     const map = /* @__PURE__ */ new Map();
     for (const item of rows) {
         const h = String(item?.dimensions?.clientRequestHTTPHost || "").toLowerCase();
-        if (wanted && h && !wanted(h))
+        if (wanted && !wanted(h))
             continue;
         const raw = item?.dimensions?.datetimeHour;
         if (!raw)
@@ -441,29 +460,20 @@ async function buildDailyReport(env2, dateKey) {
             daily = s.series;
     }
     else if (cfOk) {
-        const zs = await cfGetZoneDailySeries(env2, 7);
+        const zs = await cfGetZoneDailySeries(env2, 7, workerHosts);
         if (!zs.error && Array.isArray(zs.series))
             daily = zs.series;
     }
     const lines = [];
     lines.push("\u{1F4CA} <b>Emby Proxy \u65E5\u62A5</b>");
-    const host = getStatsHost(env2);
-    const dom = getUserDomain(env2) || host || "";
-    lines.push("<code>\u6574\u4E2A\u57DF\u540D\uFF08" + tgEscape(dom || "\u5168\u7AD9") + "\uFF09</code>");
     lines.push("<code>" + tgEscape(key) + "</code>");
     lines.push("");
     lines.push("\u8BF7\u6C42\u6570\uFF1A" + (requests == null ? "\uFF08CF \u6570\u636E\u4E0D\u53EF\u7528\uFF09" : "<b>" + requests + "</b>"));
     lines.push("\u51FA\u7AD9\u6D41\u91CF\uFF1A" + (traffic == null ? "\uFF08CF \u6570\u636E\u4E0D\u53EF\u7528\uFF09" : "<b>" + formatBytes(traffic) + "</b>"));
     if (accOk || cfOk)
         lines.push("CF \u8BBF\u95EE\u91CF\uFF1A<b>" + visits + "</b>");
-    if (host) {
-        if (accOk && acc.hostDim) {
-            lines.push("\u5176\u4E2D " + tgEscape(host) + "\uFF1A" + (Number(acc.mainRequests) || 0) + " \u6B21 / " + formatBytes(Number(acc.mainBytes) || 0));
-        }
-        else if (cfOk && cf.hostDim) {
-            lines.push("\u5176\u4E2D " + tgEscape(host) + "\uFF1A" + (Number(cf.mainRequests) || 0) + " \u6B21 / " + formatBytes(Number(cf.mainBytes) || 0));
-        }
-    }
+    if (accOk && acc.hostDim) lines.push('其中主入口：' + (Number(acc.mainRequests) || 0) + ' 次 / ' + formatBytes(Number(acc.mainBytes) || 0));
+    else if (cfOk && cf.hostDim) lines.push('其中主入口：' + (Number(cf.mainRequests) || 0) + ' 次 / ' + formatBytes(Number(cf.mainBytes) || 0));
     if (daily.length) {
         lines.push("");
         lines.push("<b>\u8FD1 7 \u65E5\uFF08\u5168\u7AD9\uFF09</b>");
@@ -473,7 +483,7 @@ async function buildDailyReport(env2, dateKey) {
     }
     if (!accOk) {
         lines.push("");
-        lines.push("<i>\u8D26\u53F7\u5206\u6790\u4E0D\u53EF\u7528\uFF0C\u5DF2\u9000\u56DE " + (cfOk ? "Zone \u7EDF\u8BA1" : "\uFF08\u65E0 CF \u6570\u636E\uFF09") + "\uFF1A" + tgEscape(String(acc.error).slice(0, 160)) + "</i>");
+        lines.push('<i>账号分析不可用，' + (cfOk ? '已使用 Zone 统计' : '请登录后台检查统计配置') + '</i>');
     }
     else if (acc.hostMatched === false) {
         lines.push("");
@@ -481,32 +491,29 @@ async function buildDailyReport(env2, dateKey) {
     }
     lines.push("");
     lines.push("<i>" + tgEscape(( /* @__PURE__ */new Date()).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })) + "</i>");
-    const githubUrl = envStr(env2, "GITHUB_URL", "GITHUB_REPO") || "https://github.com/Dirige/EMBY_CF";
-    const monitorUrl = envStr(env2, "MONITOR_URL") || "https://yx.255432.xyz/";
-    lines.push("");
-    lines.push('\u{1F517} GitHub\uFF1A<a href="' + githubUrl + '">' + tgEscape(githubUrl) + "</a>");
-    lines.push('\u{1F4C8} \u4F18\u9009\u57DF\u540D\u76D1\u63A7\uFF1A<a href="' + monitorUrl + '">' + tgEscape(monitorUrl) + "</a>");
     return lines.join("\n");
 }
 
 async function sendDailyReport(env2, dateKey) {
     const key = /^\d{4}-\d{2}-\d{2}$/.test(dateKey || "") ? dateKey : getShanghaiParts().dateKey;
     const text = await buildDailyReport(env2, key);
-    const tg = await sendTelegramMessage(env2, text);
+    const result = await sendTelegramMessage(await notificationEnv(env2), text);
+    const tg = { ok: result.ok, ...(result.ok ? {} : { error: 'Telegram 发送失败，请检查通知配置和机器人权限' }) };
     let webhook = { ok: false, skipped: true };
     if (env2.NOTIFY_WEBHOOK && isValidHttpUrl(env2.NOTIFY_WEBHOOK)) {
         try {
             const res = await fetch(env2.NOTIFY_WEBHOOK, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ text, content: text, date: key })
+                body: JSON.stringify({ text, content: text, date: key }), signal: AbortSignal.timeout(15000)
             });
             webhook = { ok: res.ok, status: res.status };
         }
         catch (e) {
-            webhook = { ok: false, error: String(e?.message || e) };
+            webhook = { ok: false, error: 'Webhook 发送失败' };
         }
     }
+    await recordNotification(env2, 'daily', tg.ok || webhook.ok);
     return { ok: tg.ok || webhook.ok, telegram: tg, webhook, date: key, text };
 }
 

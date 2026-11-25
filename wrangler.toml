@@ -1,33 +1,26 @@
-name = "fd"
-main = "worker.js"
-compatibility_date = "2025-05-15"
-compatibility_flags = ["nodejs_compat"]
-
-# 保留 Cloudflare 控制台中手动配置的变量/机密，避免部署时被覆盖。
+# Safe first-install MULTI placeholder, not an existing site's deployment config.
+# Prefer a reviewed wrangler.local.multi.toml copied from wrangler.multi.example.toml.
+# Personal edition: copy wrangler.personal.example.toml instead. Read DEPLOY.md.
+name = "replace-with-your-multi-worker"
+main = "dist/multi.mjs"
+compatibility_date = "2026-10-17"
+compatibility_flags = []
 keep_vars = true
+workers_dev = false
 
-# 保留 workers.dev 预览地址。
-workers_dev = true
+[placement]
+mode = "smart"
 
-# 路由由 GitHub Actions 根据 CF_DOMAIN 自动创建；也可以按下面的格式手动添加。
-# 注意：不要在 wrangler.toml 中写死真实域名，避免仓库泄露你的部署信息。
-#
-# routes = [
-#   { pattern = "fd.example.com/*", zone_name = "example.com" },
-#   { pattern = "*.example.com/*", zone_name = "example.com" }
-# ]
+[vars]
+BASE_DOMAIN = "fd.example.com"
+DNS_RECORD_NAME = "fd"
+USER_DOMAIN = "example.com"
+DISABLE_DIRECT_PROXY = "1"
 
-# 变量统一在 Cloudflare 控制台 / GitHub Secrets 配置，不写入 wrangler.toml，
-# 避免部署时覆盖控制台里已修正的值。
-
-# 每日日报：UTC 15:00 = 北京时间 23:00
-# 推送渠道在 Worker 变量中配置：TG_BOT_TOKEN / TG_CHAT_ID
-[triggers]
-crons = ["0 15 * * *"]
-
-# GitHub Actions 会自动查询或创建 D1，并替换下面的 database_id。
-# 手动部署时，请把 database_id 换成你自己的 D1 数据库 ID。
 [[d1_databases]]
 binding = "DB"
-database_name = "fd"
+database_name = "replace-with-multi-database"
 database_id = "00000000-0000-0000-0000-000000000000"
+
+# No automatic Cron, domain routes, account ID, or secret values.
+# Configure them explicitly for a first install; retain them on an upgrade.

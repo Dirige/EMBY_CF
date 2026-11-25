@@ -1,16 +1,24 @@
 // Baseline: 4e0357e. Edition-specific behavior is intentionally retained.
-import { JP_COLOS, PROGRESS_MAP_MAX, PROGRESS_THROTTLE_MS, classifyRequest, getResponseBytes, isCacheableRequest, normalizeIpMode, stripClientIdentityHeaders } from "./../../../shared/http/primitives.js";
-import { API_TIMEOUT_MS, HOST_DOWN_MS, LAST_PLAY_THROTTLE_MS, SENSITIVE_REQ_HEADERS, buildUpstreamHeaders, progressKeyOf } from "./../../../shared/proxy/pipeline.js";
+import { JP_COLOS, PROGRESS_MAP_MAX, PROGRESS_THROTTLE_MS, classifyRequest, getResponseBytes, isCacheableRequest, normalizeIpMode } from "./../../../shared/http/primitives.js";
+import { API_TIMEOUT_MS, HOST_DOWN_MS, LAST_PLAY_THROTTLE_MS, buildUpstreamHeaders, progressKeyOf } from "./../../../shared/proxy/pipeline.js";
 import { getSettings } from "./../config/settings.js";
-import { CONFIG, fallbackLogThrottled, hostDownUntil, lastPlayTouched, progressMap, rateLimited } from "./state.js";
+import { CONFIG, fallbackLogThrottled, hostDownUntil, relayPreferences, lastPlayTouched, progressMap, rateLimited } from "./state.js";
 import { getRelayCfg, relayFetchHeaders } from "./../relay/protocol.js";
 import { applySecurityHeaders } from "./../http/responses.js";
-import { CF_ORIGIN_ERROR_STATUSES, UPSTREAM_FAILOVER_STATUSES } from "./../storage/schema.js";
+import { UPSTREAM_FAILOVER_STATUSES } from "./../storage/schema.js";
 import { auditLog } from "./../../../shared/observability/audit.js";
 import { getStreamProxyLocation, rewritePlaybackStreamUrls } from "./stream-targets.js";
 import { sanitizeResponseHeaders } from "./../../../shared/http/responses.js";
 import { MANUAL_REDIRECT_DOMAINS } from "./../../../shared/rules/netdisk.js";
-import { isPrivateHost } from "./../../../shared/http/validation.js";
+import { prepareRequestBody } from '../../../shared/proxy/body-plan.js';
+import { discardResponse, upstreamSignal, isRetryableMethod } from '../../../shared/proxy/lifecycle.js';
+import { hasPrivateRequestState, canStorePublicResponse } from '../../../shared/proxy/cache-policy.js';
+import { followUpstreamRedirects } from '../../../shared/proxy/redirects.js';
+import { circuitKey, markCircuitDown, circuitUnavailable } from '../../../shared/proxy/circuit.js';
+import { createFetchBudget, MAX_UPSTREAM_ATTEMPTS } from '../../../shared/proxy/budget.js';
+import { rewriteJsonResponse } from '../../../shared/proxy/json-rewrite.js';
+import { relayPostEndpoint, relayRetryAllowed, relayResponseUsable } from '../relay/mode.js';
+import { relayPreferenceKey, markRelayPreferred, getRelayPreference, forgetRelayPreference, finishRelayProbe } from '../relay/preference.js';
 
 async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
     const { enableCache = true, compatMode = false, clientIpMode = "forward", matchedPrefix = null, statPrefix = null, routeOwner = "", legacyUserId = 0, customHeaders = [], streamTargets = [], streamProxyPath = "", isStreamRequest = false, streamReferrer = "" } = opts;
@@ -54,10 +62,10 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
         const progressKey = progressKeyOf(request);
         const last = progressMap.get(progressKey) || 0;
         const now = Date.now();
-        if (now - last < PROGRESS_THROTTLE_MS) {
+        if (progressKey && now - last < PROGRESS_THROTTLE_MS) {
             return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
         }
-        progressMap.set(progressKey, now);
+        if (progressKey) progressMap.set(progressKey, now);
         if (progressMap.size > PROGRESS_MAP_MAX) {
             const cutoff = now - 6e4;
             for (const [k, v] of progressMap) {
@@ -66,6 +74,7 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
                 if (progressMap.size <= PROGRESS_MAP_MAX / 2)
                     break;
             }
+            while (progressMap.size > PROGRESS_MAP_MAX) progressMap.delete(progressMap.keys().next().value);
         }
     }
     const recordStats = /* @__PURE__ */ (bytes) => {
@@ -104,57 +113,87 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
         recordStats(0);
         return response.body;
     };
+    const relay = getRelayCfg(settings);
+    const budget = createFetchBudget(request);
+    let bodyPlan = null;
+    let relayAttempted = false;
+    let usingAutoRelay = false;
+    let relayFallbackUsed = false;
+    const preferenceKey = target => relayPreferenceKey(request, target, matchedPrefix, routeOwner || String(legacyUserId || ''));
+    async function fetchThroughRelay(target, init) {
+        const relayUrl = new URL(target.pathname + target.search, relay.base);
+        const headers = new Headers(init.headers);
+        for (const [name, value] of Object.entries(await relayFetchHeaders(relay.secret, target.href))) headers.set(name, value);
+        return budget.fetch(new Request(relayUrl, { ...init, headers, redirect: 'manual', signal: request.signal }));
+    }
+    function acceptedRelay(target, init, response, reason) {
+        usingAutoRelay = true;
+        relayFallbackUsed = true;
+        if (reason !== 'preferred' && response.status < 400) markRelayPreferred(relayPreferences, preferenceKey(target));
+        if (!fallbackLogThrottled((statPrefix || matchedPrefix || 'direct') + '|relay')) {
+            ctx.waitUntil(auditLog(env2, reason === 'transport' ? 'relay.fallback.err' : 'relay.fallback',
+                `${statPrefix || matchedPrefix || 'direct'} ${init.method} category=${reqCategory} reason=${reason}`));
+        }
+        return response;
+    }
+    async function tryRelay(target, init, reason) {
+        if (!relay || relayAttempted || request.signal.aborted
+            || !relayRetryAllowed(init.method, target, reason, bodyPlan?.replayable)) return null;
+        relayAttempted = true;
+        try {
+            const retryInit = { method: init.method, headers: new Headers(init.headers), signal: request.signal };
+            if (!['GET', 'HEAD'].includes(init.method)) bodyPlan.apply(retryInit);
+            const response = await fetchThroughRelay(target, retryInit);
+            if (!relayResponseUsable(response)) {
+                discardResponse(response);
+                return null;
+            }
+            return acceptedRelay(target, init, response, reason);
+        } catch { return null; }
+    }
+    async function fetchUpstream(target, init) {
+        if (usingAutoRelay) return fetchThroughRelay(target, init);
+        const key = relay ? preferenceKey(target) : null;
+        const preference = relay && !relayAttempted ? getRelayPreference(relayPreferences, key, init.method)
+            : { useRelay: false, probe: null };
+        if (preference.useRelay) {
+            relayAttempted = true;
+            try {
+                const response = await fetchThroughRelay(target, init);
+                if (relayResponseUsable(response)) return acceptedRelay(target, init, response, 'preferred');
+                forgetRelayPreference(relayPreferences, key, preference.entry);
+                if (!['GET', 'HEAD'].includes(init.method)) {
+                    relayFallbackUsed = true;
+                    return response;
+                }
+                discardResponse(response);
+            } catch (error) {
+                forgetRelayPreference(relayPreferences, key, preference.entry);
+                if (!['GET', 'HEAD'].includes(init.method) || request.signal.aborted) throw error;
+            }
+        }
+        let response;
+        try { response = await budget.fetch(new Request(target, init)); }
+        catch (error) {
+            const fallback = await tryRelay(target, init, 'transport');
+            finishRelayProbe(relayPreferences, key, preference.probe, false);
+            if (fallback) return fallback;
+            throw error;
+        }
+        const fallback = await tryRelay(target, init, response.status);
+        finishRelayProbe(relayPreferences, key, preference.probe, response.status < 400 && relayResponseUsable(response));
+        if (!fallback) return response;
+        discardResponse(response);
+        return fallback;
+    }
     const upgradeHeader = request.headers.get("Upgrade");
     if (upgradeHeader?.toLowerCase() === "websocket") {
-        const relayWs = getRelayCfg(settings);
-        const wsFetchRelay = /* @__PURE__ */ async (target, wsHeaders2) => {
-            const rUrl = new URL(target.pathname + target.search, relayWs.base);
-            const h = new Headers(wsHeaders2);
-            const signHeaders = await relayFetchHeaders(relayWs.secret, target.toString());
-            for (const [k, v] of Object.entries(signHeaders))
-                h.set(k, v);
-            return fetch(new Request(rUrl.toString(), { method: request.method, headers: h, redirect: "manual" }));
-        };
-        if (ipMode === "forward") {
-            try {
-                return await fetch(upstreamUrls[0], request);
-            }
-            catch (err) {
-                if (relayWs) {
-                    try {
-                        return await wsFetchRelay(new URL(upstreamUrls[0]), request.headers);
-                    }
-                    catch (_) {
-                    }
-                }
-                throw err;
-            }
-        }
-        const wsHeaders = new Headers(request.headers);
-        if (ipMode === "disable") {
-            stripClientIdentityHeaders(wsHeaders);
-        }
-        else {
-            wsHeaders.delete("x-real-ip");
-            wsHeaders.delete("x-forwarded-for");
-            wsHeaders.delete("forwarded");
-        }
-        try {
-            return await fetch(upstreamUrls[0], new Request(upstreamUrls[0], { method: request.method, headers: wsHeaders }));
-        }
-        catch (err) {
-            if (relayWs) {
-                try {
-                    return await wsFetchRelay(new URL(upstreamUrls[0]), wsHeaders);
-                }
-                catch (_) {
-                }
-            }
-            throw err;
-        }
+        const wsHeaders = makeUpstreamHeaders(firstUpstreamUrl);
+        wsHeaders.set('Upgrade', 'websocket');
+        wsHeaders.set('Connection', 'Upgrade');
+        return fetchUpstream(firstUpstreamUrl, { method: request.method, headers: wsHeaders, redirect: 'manual', signal: request.signal });
     }
-    const hasAuthHeader = SENSITIVE_REQ_HEADERS.some((h) => request.headers.has(h));
-    const canUseCache = enableCache && !isStreamRequest && isCacheableRequest(reqCategory) && request.method === "GET" && !request.headers.has("Range") && !(reqCategory === "image" && hasAuthHeader);
+    const canUseCache = enableCache && !isStreamRequest && isCacheableRequest(reqCategory) && request.method === "GET" && !request.headers.has("Range") && !hasPrivateRequestState(request);
     const cacheKey = canUseCache ? new Request(request.url, { method: "GET" }) : null;
     if (canUseCache) {
         try {
@@ -170,37 +209,18 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
         catch (_) {
         }
     }
-    let requestBody = null;
-    if (request.method !== "GET" && request.method !== "HEAD") {
-        requestBody = await request.arrayBuffer();
-    }
-    const timeoutSignal = /* @__PURE__ */ () => (isPlaybackInfo || isPlaying || reqCategory === "api") && typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(API_TIMEOUT_MS) : void 0;
-    const relay = getRelayCfg(settings);
-    const canRelayFallback = !!relay;
-    let relayFallbackUsed = false;
-    const tryRelayFallback = /* @__PURE__ */ async (urlForRelay) => {
-        if (!relay)
-            return null;
-        const t = urlForRelay instanceof URL ? urlForRelay : new URL(urlForRelay);
-        const rUrl = new URL(t.pathname + t.search, relay.base);
-        const fbHeaders = makeUpstreamHeaders(t);
-        const fbSign = await relayFetchHeaders(relay.secret, t.toString());
-        for (const [k, v] of Object.entries(fbSign))
-            fbHeaders.set(k, v);
-        const fbRange = request.headers.get("Range");
-        if (fbRange)
-            fbHeaders.set("Range", fbRange);
-        const fbInit = { method: request.method, headers: fbHeaders, redirect: redirectMode };
-        if (requestBody)
-            fbInit.body = requestBody;
-        return fetch(new Request(rUrl.toString(), fbInit));
-    };
-    const relayResponseUsable = /* @__PURE__ */ (rb) => !!rb && !rb.headers.has("X-Relay-Denied") && ![401, 403, 451].includes(rb.status) && rb.status < 500;
+    bodyPlan = await prepareRequestBody(request, undefined, undefined, {
+        bufferUnknown: !!relay && relayPostEndpoint(request.method, firstUpstreamUrl),
+    });
+    const retryable = isRetryableMethod(request);
+    const timeoutSignal = () => upstreamSignal(request, (isPlaybackInfo || isPlaying || reqCategory === 'api') ? API_TIMEOUT_MS : 0);
     let finalResponse = null;
     let fallbackResponse = null;
     let lastError = null;
     let lastUpstreamUrl = null;
+    let attempts = 0;
     for (let i = 0; i < upstreamUrls.length; i++) {
+        if (attempts >= MAX_UPSTREAM_ATTEMPTS) break;
         let upstreamUrl;
         try {
             upstreamUrl = new URL(upstreamUrls[i]);
@@ -209,7 +229,8 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
             lastError = new Error("Invalid target URL");
             continue;
         }
-        if (i < upstreamUrls.length - 1 && (hostDownUntil.get(upstreamUrl.host) || 0) > Date.now()) {
+        const healthKey = circuitKey(request, upstreamUrl, matchedPrefix, routeOwner || String(legacyUserId || ''));
+        if (i < upstreamUrls.length - 1 && circuitUnavailable(hostDownUntil, healthKey)) {
             lastError = lastError || new Error("\u7EBF\u8DEF\u6682\u65F6\u4E0D\u53EF\u7528: " + upstreamUrl.host);
             continue;
         }
@@ -223,6 +244,7 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
             }
         }
         const headers = makeUpstreamHeaders(upstreamUrl);
+        if (isPlaybackInfo && streamTargets.length) headers.set('Accept-Encoding', 'identity');
         const rangeHeader = request.headers.get("Range");
         if (rangeHeader && (reqCategory === "streaming" || reqCategory === "segment" || reqCategory === "other")) {
             if (!headers.has("Range"))
@@ -234,175 +256,77 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
         const fetchInit = {
             method: request.method,
             headers,
-            redirect: redirectMode
+            redirect: 'manual'
         };
-        if (requestBody)
-            fetchInit.body = requestBody;
-        const sig = timeoutSignal();
-        if (sig)
-            fetchInit.signal = sig;
+        bodyPlan.apply(fetchInit);
         try {
-            let response = await fetch(new Request(upstreamUrl.toString(), fetchInit));
-            if (canRelayFallback && ([401, 403, 451].includes(response.status) || CF_ORIGIN_ERROR_STATUSES.includes(response.status))) {
-                if (!fallbackLogThrottled((matchedPrefix || "direct") + "|40x")) {
-                    try {
-                        await auditLog(env2, "relay.fallback", `${matchedPrefix || "direct"} ${request.method} ${pathname} direct_status=${response.status} colo=${request.cf?.colo || ""}`);
-                    }
-                    catch (_) {
-                    }
-                }
-                try {
-                    const rb = await tryRelayFallback(upstreamUrl);
-                    if (relayResponseUsable(rb)) {
-                        response = rb;
-                        relayFallbackUsed = true;
-                    }
-                }
-                catch (_) {
-                }
-            }
-            if (redirectMode === "manual" && UPSTREAM_FAILOVER_STATUSES.includes(response.status)) {
+            attempts++;
+            fetchInit.signal = timeoutSignal();
+            const response = await fetchUpstream(upstreamUrl, fetchInit);
+            if (retryable && redirectMode === "manual" && UPSTREAM_FAILOVER_STATUSES.includes(response.status)) {
                 lastError = new Error(`HTTP ${response.status}`);
-                hostDownUntil.set(upstreamUrl.host, Date.now() + HOST_DOWN_MS);
+                markCircuitDown(hostDownUntil, healthKey, Date.now() + HOST_DOWN_MS);
+                discardResponse(fallbackResponse);
                 fallbackResponse = response;
                 continue;
             }
-            hostDownUntil.delete(upstreamUrl.host);
+            hostDownUntil.delete(healthKey);
             finalResponse = response;
             lastUpstreamUrl = upstreamUrl;
             break;
         }
         catch (err) {
-            lastError = err;
-            if (canRelayFallback) {
-                if (!fallbackLogThrottled((matchedPrefix || "direct") + "|err")) {
-                    try {
-                        await auditLog(env2, "relay.fallback.err", `${matchedPrefix || "direct"} ${request.method} ${pathname} direct_err=${err && err.message || String(err)} colo=${request.cf?.colo || ""}`);
-                    }
-                    catch (_) {
-                    }
-                }
-                try {
-                    const rb = await tryRelayFallback(upstreamUrl);
-                    if (relayResponseUsable(rb)) {
-                        hostDownUntil.delete(upstreamUrl.host);
-                        finalResponse = rb;
-                        lastUpstreamUrl = upstreamUrl;
-                        relayFallbackUsed = true;
-                        break;
-                    }
-                }
-                catch (_) {
-                }
+            if (request.signal.aborted) {
+                discardResponse(fallbackResponse);
+                return new Response('Client closed request', { status: 499 });
             }
-            hostDownUntil.set(upstreamUrl.host, Date.now() + HOST_DOWN_MS);
+            lastError = err;
+            markCircuitDown(hostDownUntil, healthKey, Date.now() + HOST_DOWN_MS);
+            if (!retryable) break;
             continue;
         }
     }
+    if (request.signal.aborted) {
+        discardResponse(finalResponse);
+        discardResponse(fallbackResponse);
+        return new Response('Client closed request', { status: 499 });
+    }
+    if (fallbackResponse && finalResponse && fallbackResponse !== finalResponse) discardResponse(fallbackResponse);
     if (!finalResponse && fallbackResponse) {
         finalResponse = fallbackResponse;
         lastUpstreamUrl = null;
     }
     if (!finalResponse) {
-        return new Response("\u6240\u6709\u7EBF\u8DEF\u4E0D\u53EF\u7528: " + (lastError?.message || "Unknown"), { status: 502 });
+        return new Response('所有线路不可用，请检查线路配置或稍后重试', { status: 502 });
     }
-    if (redirectMode === "manual" && lastUpstreamUrl) {
-        const location = finalResponse.headers.get("Location");
-        if (location && finalResponse.status >= 300 && finalResponse.status < 400) {
-            let redirectUrl;
-            try {
-                redirectUrl = new URL(location, lastUpstreamUrl);
-            }
-            catch {
-                return new Response("Bad redirect location", { status: 502 });
-            }
-            if (redirectUrl.protocol !== "http:" && redirectUrl.protocol !== "https:") {
-                return new Response("Bad redirect location", { status: 502 });
-            }
-            const streamLocation = getStreamProxyLocation(request, redirectUrl, streamTargets, streamProxyPath);
-            if (streamLocation) {
-                // 等价于 nginx proxy_redirect；保留真实路径/签名，客户端下一跳仍走本用户路由。
-                const newHeaders = sanitizeResponseHeaders(finalResponse.headers);
-                newHeaders.set("Location", streamLocation);
-                newHeaders.set("Cache-Control", "no-store");
-                newHeaders.set("Access-Control-Allow-Origin", "*");
-                applySecurityHeaders(newHeaders);
-                if (relayFallbackUsed)
-                    newHeaders.set("X-Relay-Fallback", "1");
-                recordStats(0);
-                if (!fallbackLogThrottled((statPrefix || matchedPrefix || "direct") + "|stream.redirect")) {
-                    ctx.waitUntil(auditLog(env2, "stream.redirect", `${statPrefix || matchedPrefix || "direct"} ${request.method} host=${redirectUrl.host}`));
-                }
-                return new Response(finalResponse.body, { status: finalResponse.status, headers: newHeaders });
-            }
-            if (MANUAL_REDIRECT_DOMAINS.concat(settings.manualDomains).some((domain2) => redirectUrl.hostname === domain2 || redirectUrl.hostname.endsWith("." + domain2))) {
-                const newHeaders = sanitizeResponseHeaders(finalResponse.headers);
-                newHeaders.set("Location", redirectUrl.toString());
-                applySecurityHeaders(newHeaders);
-                recordStats(0);
-                return new Response(finalResponse.body, { status: finalResponse.status, headers: newHeaders });
-            }
-            if (isPrivateHost(redirectUrl.hostname)) {
-                return new Response("Redirect target not allowed", { status: 502 });
-            }
-            const crossOrigin = redirectUrl.origin !== lastUpstreamUrl.origin;
-            const newReqHeaders = buildUpstreamHeaders(request, redirectUrl, { ipMode, compatMode: false, crossOrigin });
-            const redirectInit = { method: request.method, headers: newReqHeaders, body: requestBody || void 0, redirect: "follow" };
-            const rsig = timeoutSignal();
-            if (rsig)
-                redirectInit.signal = rsig;
-            let redirectResponse = null;
-            let redirectBlocked = false;
-            try {
-                const rr = await fetch(redirectUrl.toString(), redirectInit);
-                if ([401, 403, 451].includes(rr.status) || rr.status >= 500)
-                    redirectBlocked = true;
-                else
-                    redirectResponse = rr;
-            }
-            catch (err) {
-                redirectBlocked = true;
-                lastError = err;
-            }
-            if (redirectBlocked && canRelayFallback) {
-                if (!fallbackLogThrottled((matchedPrefix || "direct") + "|rdr")) {
-                    try {
-                        await auditLog(env2, "relay.fallback", `${matchedPrefix || "direct"} REDIRECT ${redirectUrl.host} colo=${request.cf?.colo || ""}`);
+    if (lastUpstreamUrl) {
+        try {
+            const followed = await followUpstreamRedirects(finalResponse, lastUpstreamUrl, {
+                request, bodyPlan, signalFor: timeoutSignal,
+                fetcher: next => fetchUpstream(new URL(next.url), { method: next.method, headers: next.headers, redirect: 'manual', body: next.body, duplex: 'half', signal: next.signal }),
+                headersFor: (target, crossOrigin) => buildUpstreamHeaders(request, target, { ipMode, compatMode, crossOrigin: crossOrigin || isStreamRequest }),
+                clientLocation: target => {
+                    const mapped = getStreamProxyLocation(request, target, streamTargets, streamProxyPath);
+                    if (mapped) {
+                        // Preserve the multi edition's explicit 302 stream mapping.
+                        // Its next Worker request must retain the VPS/IP path too.
+                        if (usingAutoRelay) markRelayPreferred(relayPreferences, preferenceKey(target));
+                        if (!fallbackLogThrottled((statPrefix || matchedPrefix || 'direct') + '|stream.redirect')) {
+                            ctx.waitUntil(auditLog(env2, 'stream.redirect', `${statPrefix || matchedPrefix || 'direct'} ${request.method} mapped_stream`));
+                        }
+                        return mapped;
                     }
-                    catch (_) {
-                    }
-                }
-                try {
-                    const rb = await tryRelayFallback(redirectUrl);
-                    if (relayResponseUsable(rb)) {
-                        redirectResponse = rb;
-                        relayFallbackUsed = true;
-                    }
-                }
-                catch (_) {
-                }
-            }
-            if (!redirectResponse) {
-                return new Response("\u91CD\u5B9A\u5411\u76EE\u6807\u4E0D\u53EF\u7528: " + (lastError?.message || redirectUrl.host), { status: 502 });
-            }
-            finalResponse = redirectResponse;
+                    return !usingAutoRelay && redirectMode === 'manual' && MANUAL_REDIRECT_DOMAINS.concat(settings.manualDomains).some(domain => target.hostname === domain || target.hostname.endsWith('.' + domain)) ? target.href : null;
+                },
+            });
+            finalResponse = followed.response;
+        } catch (error) {
+            return new Response(request.signal.aborted ? 'Client closed request' : 'Upstream redirect failed', { status: request.signal.aborted ? 499 : 502 });
         }
     }
     if (isPlaybackInfo && streamTargets.length && finalResponse.status === 200 && request.method !== "HEAD") {
-        try {
-            const data = await finalResponse.clone().json();
-            if (rewritePlaybackStreamUrls(data, request, streamTargets, streamProxyPath, lastUpstreamUrl || firstUpstreamUrl)) {
-                const headers = sanitizeResponseHeaders(finalResponse.headers);
-                for (const key of ["Content-Length", "Content-Encoding", "ETag", "Content-MD5", "Digest"])
-                    headers.delete(key);
-                headers.set("Content-Type", "application/json; charset=utf-8");
-                headers.set("Cache-Control", "no-store");
-                finalResponse = new Response(JSON.stringify(data), { status: finalResponse.status, statusText: finalResponse.statusText, headers });
-            }
-        }
-        catch {
-            // 非 JSON 或没有匹配的播放 URL 时，保持原响应，不改媒体源的存储 Path。
-        }
+        finalResponse = await rewriteJsonResponse(finalResponse, data => rewritePlaybackStreamUrls(data, request, streamTargets, streamProxyPath, lastUpstreamUrl || firstUpstreamUrl,
+            usingAutoRelay ? target => markRelayPreferred(relayPreferences, preferenceKey(target)) : undefined));
     }
     const responseHeaders = sanitizeResponseHeaders(finalResponse.headers);
     responseHeaders.set("Access-Control-Allow-Origin", "*");
@@ -415,7 +339,7 @@ async function proxyDirectUrl(request, env2, ctx, upstreamUrls, opts = {}) {
         responseHeaders.set("X-Served-By", request.cf?.colo || "Unknown");
     }
     const body = meterBody(finalResponse);
-    if (canUseCache && finalResponse.status === 200 && !finalResponse.headers.has("Set-Cookie")) {
+    if (canUseCache && canStorePublicResponse(finalResponse)) {
         const maxAge = reqCategory === "image" ? 2592e3 : 86400;
         responseHeaders.set("Cache-Control", `public, max-age=${maxAge}`);
         responseHeaders.set("X-Cache", "MISS");

@@ -6,6 +6,8 @@ import { clearRouteCache, validateUserPrefix } from "./../proxy/routes.js";
 import { isValidHttpUrl, parseHeaderLines, parseIpList, validIpList } from "./../../../shared/http/validation.js";
 import { DEFAULT_USER_ROUTE_LIMIT } from "./../storage/schema.js";
 import { auditLog } from "./../../../shared/observability/audit.js";
+import { notificationId } from '../integrations/alert-privacy.js';
+import { userRoutesHaveLegacyUserId } from '../storage/legacy.js';
 
 var routesHasUserIdCache = null;
 
@@ -112,10 +114,10 @@ async function userListRoutes(env2, owner) {
     for (const r of legacy) {
         if (seen.has(r.prefix))
             continue;
-        out.push({ ...r, source: "legacy", down_count: countDown(r.prefix, r.target) });
+        out.push({ ...r, source: "legacy", down_count: countDown(owner + '/' + r.prefix, r.target) });
         seen.add(r.prefix);
     }
-    return out;
+    return Promise.all(out.map(async r => ({ ...r, notification_id: await notificationId(env2, owner + '/' + r.prefix) })));
 }
 
 async function userSaveRoute(env2, owner, data) {
@@ -188,13 +190,20 @@ async function userSaveRoute(env2, owner, data) {
         if (total >= limit)
             return { error: "\u8DEF\u7531\u6570\u91CF\u5DF2\u8FBE\u4E0A\u9650\uFF08" + limit + " \u6761\uFF09\uFF0C\u8BF7\u8054\u7CFB\u7BA1\u7406\u5458\u8C03\u6574" };
     }
-    const existing = await env2.DB.prepare("SELECT sort_order, last_play, enabled FROM user_routes WHERE owner = ? AND prefix = ?").bind(owner, lookupPrefix).first();
-    const insert = env2.DB.prepare("INSERT OR REPLACE INTO user_routes (owner, prefix, target, stream_target, remark, cache_img, compat_mode, ip_mode, last_play, sort_order, enabled, custom_headers, ip_allow, ip_block) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(owner, prefix, targets.join(","), streamTargets.join(","), String(data.remark || ""), data.cache_img === "off" ? "off" : "on", data.compat_mode === "on" ? "on" : "off", normalizeIpMode(data.ip_mode), existing?.last_play || "", existing?.sort_order || 0, existing?.enabled === 0 ? 0 : 1, String(data.custom_headers || "").trim(), allowList.join(","), blockList.join(","));
-    if (isRename) {
-        await env2.DB.batch([insert, env2.DB.prepare("DELETE FROM user_routes WHERE owner = ? AND prefix = ?").bind(owner, oldPrefix)]);
+    const legacyUserId = await userRoutesHaveLegacyUserId(env2);
+    const existing = await env2.DB.prepare('SELECT sort_order, last_play, enabled' + (legacyUserId ? ', id' : '') + ' FROM user_routes WHERE owner = ? AND prefix = ?').bind(owner, lookupPrefix).first();
+    if (oldPrefix && !existing) return { error: '原路由不存在或不属于当前账号' };
+    const names = ['owner', 'prefix', 'target', 'stream_target', 'remark', 'cache_img', 'compat_mode', 'ip_mode', 'last_play', 'sort_order', 'enabled', 'custom_headers', 'ip_allow', 'ip_block'];
+    const values = [owner, prefix, targets.join(','), streamTargets.join(','), String(data.remark || ''), data.cache_img === 'off' ? 'off' : 'on', data.compat_mode === 'on' ? 'on' : 'off', normalizeIpMode(data.ip_mode), existing?.last_play || '', existing?.sort_order || 0, existing?.enabled === 0 ? 0 : 1, String(data.custom_headers || '').trim(), allowList.join(','), blockList.join(',')];
+    if (existing) {
+        // Preserve the legacy id, user_id and unknown historical fields; REPLACE
+        // would delete/recreate the row and reset them during an ordinary edit.
+        await env2.DB.prepare('UPDATE user_routes SET ' + names.map(name => name + ' = ?').join(', ') + ' WHERE owner = ? AND prefix = ?')
+            .bind(...values, owner, lookupPrefix).run();
     }
     else {
-        await insert.run();
+        if (legacyUserId) { names.unshift('user_id'); values.unshift(user.id); }
+        await env2.DB.prepare('INSERT INTO user_routes (' + names.join(', ') + ') VALUES (' + names.map(() => '?').join(', ') + ')').bind(...values).run();
     }
     clearRouteCache();
     await auditLog(env2, "user.route.save", owner + " /" + prefix);

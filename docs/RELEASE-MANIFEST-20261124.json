@@ -1,0 +1,55 @@
+{
+  "date": "2026-11-24",
+  "sourceBaseline": "4e0357e",
+  "tests": {
+    "automaticPassed": 339,
+    "browserPassed": 20,
+    "multiSnapshotChecksPassed": 130,
+    "snapshotOutboundRequests": 0,
+    "dependencyVulnerabilities": 0
+  },
+  "editions": {
+    "personal": {
+      "worker": "emby-personal-refactor",
+      "entry": "https://proxy.255432.de5.net",
+      "version": "v6.4.9-refactor.8",
+      "versionId": "7c045fde-6c5e-4458-9634-cfaa333fbcef",
+      "rollbackVersionId": "436d96b8-33be-458d-ae0d-4e5546f47454",
+      "percentage": 100,
+      "bytes": 276502,
+      "sha256": "a4761cb36579184f9a21195bd6f3f90580bc7e532b294e2a706b8e40f1158f4e",
+      "reuploadedDuringMultiSync": false
+    },
+    "multi": {
+      "worker": "fd",
+      "entry": "https://fd.255432.de5.net",
+      "version": "v6.8.11-multi-refactor.3",
+      "versionId": "82eb4768-8589-438b-beb5-a230bc560299",
+      "rollbackVersionId": "79de3cb9-518a-4823-83f0-03ebc2b7ecf0",
+      "percentage": 100,
+      "bytes": 400670,
+      "sha256": "43d58cb8e51948ea9bf8cafa69b01c3301966c2b0aafd14afcd9670d2f707c45",
+      "compatibilityDate": "2026-10-17",
+      "compatibilityFlags": [],
+      "usageModel": "standard",
+      "placement": { "mode": "smart" },
+      "cron": "0 */15 * * *",
+      "liveCodeVerified": true,
+      "originalTablesRetained": 22,
+      "originalRowsRetained": 602,
+      "originalColumnsIndexesRetained": true,
+      "bindingsUnchanged": true,
+      "configurationUnchanged": true,
+      "domainsUnchanged": true,
+      "relayStillUnconfigured": true
+    }
+  },
+  "vps": {
+    "modified": false,
+    "restarted": false,
+    "configurationSha256": "8d961924b2f5336b5d09906fec59c89a4fcb12b5d082f2bcb1da04ed1f0cb8b8"
+  },
+  "realMediaPlaybackVerified": false,
+  "productionPasswordsModifiedByThisRelease": false,
+  "sourceCommittedOrPushed": false
+}

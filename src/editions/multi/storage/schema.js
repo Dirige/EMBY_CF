@@ -1,5 +1,6 @@
 // Baseline: 4e0357e. Edition-specific behavior is intentionally retained.
 import { DEFAULT_OPTIMIZED_DOMAINS } from "./../../../shared/http/primitives.js";
+import { ensureLegacyUserRoutes } from './legacy.js';
 
 var DEFAULT_USER_ROUTE_LIMIT = 20;
 
@@ -82,8 +83,10 @@ var SCHEMA_ID = "multi-v6.8.5";
 async function initDatabaseSchema(env2) {
     try {
         const marker = await env2.DB.prepare(`SELECT value FROM settings WHERE key = 'schema_init'`).first();
-        if (marker && marker.value === SCHEMA_ID)
+        if (marker && marker.value === SCHEMA_ID) {
+            await ensureLegacyUserRoutes(env2);
             return;
+        }
     }
     catch (_) {
     }
@@ -238,6 +241,7 @@ async function initDatabaseSchema(env2) {
         catch (e) {
         }
     }
+    await ensureLegacyUserRoutes(env2);
     try {
         await env2.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_user_routes_owner ON user_routes(owner)`).run();
     }
@@ -288,11 +292,8 @@ async function initDatabaseSchema(env2) {
     }
     catch (e) {
     }
-    try {
-        await env2.DB.prepare(`DELETE FROM optimized_domains WHERE domain = 'www.visa.cn' AND is_builtin = 1`).run();
-    }
-    catch (e) {
-    }
+    // Existing preferred domains are user configuration, even if they once
+    // shipped as defaults. Schema initialization must not delete them.
     try {
         await env2.DB.prepare(`ALTER TABLE proxy_stats_hourly ADD COLUMN traffic_bytes INTEGER NOT NULL DEFAULT 0`).run();
     }

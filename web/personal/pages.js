@@ -4,8 +4,20 @@ import { DYN_PALETTE, PAGE_STYLE, THEME_INIT, THEME_LOGIC } from "./../../src/sh
 import { LANDING_CSS, SPEED_TOOLS } from "./../../src/editions/personal/ui/theme.js";
 import { CURRENT_VERSION } from "./../../src/editions/personal/version.js";
 
-function buildFrontendHtml(authed) {
-    const rightPanel = authed ? `    <h2>快捷入口</h2>
+function buildFrontendHtml(authed, { previewEdition } = {}) {
+    const preview = previewEdition === 'personal' || previewEdition === 'multi';
+    const multiPreview = previewEdition === 'multi';
+    const rightPanel = preview ? `    <h2>快捷入口</h2>
+    <p class="lp2-sub">${multiPreview ? '多人版' : '个人版'} · 本地预览</p>
+    <form method="post" action="/__preview/login">
+      <button class="lp2-cta" type="submit">进入${multiPreview ? '管理员' : '个人版'}工作区 <span>→</span></button>
+    </form>
+    ${multiPreview ? `<form method="post" action="/__preview/login?role=member" style="margin-top:12px">
+      <button class="btn" style="width:100%" type="submit">验收普通用户视图</button>
+    </form>` : ''}
+    <nav class="lp2-links">
+      <a href="http://127.0.0.1:${multiPreview ? '4273' : '4274'}/__preview"><span class="lp2-ico">🎛️</span><span class="lp2-name">切换到${multiPreview ? '个人版' : '多人版'}</span><span class="lp2-arrow">→</span></a>
+    </nav>` : authed ? `    <h2>快捷入口</h2>
     <p class="lp2-sub">节点管理 · 优选线路 · 使用统计</p>
     <a class="lp2-cta" href="/admin">进入管理后台 <span>→</span></a>
     <nav class="lp2-links">
@@ -13,8 +25,8 @@ function buildFrontendHtml(authed) {
       <a href="https://github.com/Dirige/EMBY_CF" target="_blank" rel="noopener"><span class="lp2-ico">🐙</span><span class="lp2-name">GitHub</span><span class="lp2-arrow">↗</span></a>
       <a href="https://yx.255432.xyz/" target="_blank" rel="noopener"><span class="lp2-ico">🛰️</span><span class="lp2-name">优选域名监测</span><span class="lp2-arrow">↗</span></a>
     </nav>` : `    <h2>管理员登录</h2>
-    <p class="lp2-sub">输入管理密钥进入控制台</p>
-    <input type="password" id="tokenInput" class="lp2-input" placeholder="管理密钥" autocomplete="off" onkeydown="if(event.key==='Enter')lpLogin()">
+    <p class="lp2-sub">输入登录密码进入控制台</p>
+    <input type="password" id="tokenInput" class="lp2-input" placeholder="登录密码" autocomplete="current-password" maxlength="1024" onkeydown="if(event.key==='Enter')lpLogin()">
     <p id="loginErr" class="lp2-err"></p>
     <button class="lp2-cta" id="loginBtn" onclick="lpLogin()">登 录 <span>→</span></button>
     <div class="lp2-mini">
@@ -43,12 +55,12 @@ function buildFrontendHtml(authed) {
   </section>
   <section class="lp2-right">
 ${rightPanel}
-    <p class="lp2-foot">每日壁纸来自 Bing · 请妥善使用</p>
+    <p class="lp2-foot">${preview ? '仅本地测试 · 未部署线上 · 请勿填写真实凭据' : '每日壁纸来自 Bing · 请妥善使用'}</p>
   </section>
 </main>
 <script>${THEME_LOGIC}
 ${authed ? "" : `async function lpLogin() {
-  var t = document.getElementById('tokenInput').value.trim();
+  var t = document.getElementById('tokenInput').value;
   var err = document.getElementById('loginErr');
   var btn = document.getElementById('loginBtn');
   err.textContent = '';
@@ -144,7 +156,7 @@ function buildAdminHtml() {
 
   <div class="card">
     <div class="sec-title">VPS 反代中继 <span class="chip" id="relayChip" style="margin-left:8px">—</span></div>
-    <p class="form-hint" style="margin-bottom:14px">勾选「走 VPS 反代」的路由，链路变为 <b>客户端 → Worker → VPS 中继 → Emby 源站</b>。VPS 地址/端口/密钥/证书全部保存在这里，保存后自动推送到 VPS，不需要登录 VPS 改配置。</p>
+    <p class="form-hint" style="margin-bottom:14px">线路选「开」直接走 VPS；选「自动」则 Worker 优先，遇到连接故障或 IP／地区拦截时尝试 VPS，成功后短期优先 VPS；选「关」不使用 VPS。</p>
     <div class="form-group">
       <label>中继地址（含端口）</label>
       <input id="relayUrl" placeholder="例如 http://1.2.3.4:2087 或 https://relay.xxx.com:2087">
@@ -157,7 +169,7 @@ function buildAdminHtml() {
     </div>
     <div class="form-group">
       <label class="checkbox-label">
-        <input type="checkbox" id="relayEnabled"> 启用中继（总开关，勾选后带「走 VPS 反代」标记的路由才会真正走中继）
+        <input type="checkbox" id="relayEnabled"> 启用 VPS 中继（总开关）
       </label>
     </div>
     <details class="adv-box">
@@ -209,6 +221,7 @@ function buildAdminHtml() {
     <div class="form-group">
       <label>备注名</label>
       <input id="routeRemark" placeholder="例如：我的 Emby 服务器">
+      <p class="form-hint">异常与恢复通知优先显示备注；请只填写可公开的服名，不要放地址或密钥。空备注、疑似敏感内容或超过 64 字符时使用通知编号。</p>
     </div>
     <div class="form-group">
       <label>路径 (prefix)</label>
@@ -230,11 +243,11 @@ function buildAdminHtml() {
       <p class="form-hint">兼容模式适用于部分无法正常播放的 Emby 服务器，开启后不重写媒体流地址，由客户端直连源站播放</p>
       <label style="margin-top:12px">VPS 反代分流模式</label>
       <select id="routeRelayMode" style="margin-top:6px">
-        <option value="off">off — 不启用（Worker 直连源站）</option>
-        <option value="on">on — 全部流量走 VPS 中继</option>
-        <option value="image">image — API/图片/WS 走 VPS，视频流直连（省 VPS 带宽）</option>
+        <option value="auto" selected>自动 — Worker 优先，失败切 VPS</option>
+        <option value="on">开 — 直接走 VPS</option>
+        <option value="off">关 — 只走 Worker</option>
       </select>
-      <p class="form-hint">「image」适合源站禁止 CN/JP 但 CF 助手能访问的视频站点：小流量嵌 VPS 当地区保险，视频大流量走 CF 骨干。若该站 CF 直连也进不去请选 on</p>
+      <p class="form-hint">自动：GET/HEAD 遇到 401/403/451、连接失败、超时或指定网关错误时尝试一次 VPS；登录和 PlaybackInfo 的小型 POST 仅在明确收到 401/403/451 时重试。回退成功后优先 VPS 2 分钟，再由只读请求探测直连恢复；下载慢不会中途重发视频。「开」要求全局中继已启用并配置，否则报错，不会改走 Worker。</p>
     </div>
     <div class="form-group">
       <label>客户端 IP</label>
@@ -299,6 +312,34 @@ function buildAdminHtml() {
     <div class="form-group">
       <label class="checkbox-label"><input type="checkbox" id="setDailyReport" checked> 每天 23:00（北京时间）自动发送 Telegram 日报</label>
       <p class="form-hint">需要给 Worker 配置 Cron 触发器，例如 <code>0 15 * * *</code>；也可以随时点顶部的「发送日报」手动发送</p>
+    </div>
+    <div class="form-group">
+      <h3>通知 · Telegram</h3>
+      <label class="checkbox-label"><input type="checkbox" id="setRouteAlerts" checked> 发送线路异常与恢复通知</label>
+      <p class="form-hint">告警优先显示安全的线路备注，不发送线路地址、入口或原始错误；备注为空或疑似含地址、凭据时回退到线路卡片上的通知编号。</p>
+      <label for="tgBotToken">Bot Token</label>
+      <input id="tgBotToken" type="password" autocomplete="new-password" maxlength="256" placeholder="填写新 Token；留空保持不变">
+      <label for="tgChatId">Chat ID</label>
+      <input id="tgChatId" inputmode="text" maxlength="21" placeholder="数字 ID；群组通常为负数">
+      <p class="form-hint" id="tgConfigStatus"></p>
+      <p class="form-hint" id="tgLastStatus"></p>
+      <div class="modal-actions">
+        <button class="btn" id="btnSaveTelegram" onclick="saveTelegram(this)">保存 TG 配置</button>
+        <button class="btn" id="btnTestTelegram" onclick="testTelegramConfig(this)">测试发送</button>
+        <button class="btn btn-danger" onclick="clearTelegram(this)">清除并停用 TG</button>
+      </div>
+      <p class="form-hint">TG 配置单独保存；测试使用已保存配置。Token 加密存储，不回显、不导出。清除后不会回退使用环境变量。</p>
+    </div>
+    <div class="form-group">
+      <h3>安全 · 修改登录密码</h3>
+      <label for="currentPassword">当前密码</label>
+      <input id="currentPassword" type="password" autocomplete="current-password" maxlength="1024">
+      <label for="newPassword">新密码（12–128 个字符）</label>
+      <input id="newPassword" type="password" autocomplete="new-password" minlength="12" maxlength="128">
+      <label for="confirmPassword">确认新密码</label>
+      <input id="confirmPassword" type="password" autocomplete="new-password" minlength="12" maxlength="128">
+      <p class="form-hint">修改后所有旧会话失效，需用新密码重新登录。忘记密码只能由 Cloudflare 管理员执行恢复，旧管理密钥不会作为第二个登录密码。</p>
+      <button class="btn" id="btnChangePassword" onclick="updatePassword(this)">修改密码并退出</button>
     </div>
     <div class="form-group">
       <label>每 IP 每分钟请求上限（0 = 不限制）</label>

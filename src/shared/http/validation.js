@@ -107,12 +107,18 @@ async function cachedJson(request, key, ttlSec, producer) {
 }
 
 function isPrivateHost(h) {
-    h = String(h || "").toLowerCase().replace(/^\[|\]$/g, "");
+    h = String(h || "").toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, '');
+    const mapped = h.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    if (mapped) {
+        const high = parseInt(mapped[1], 16), low = parseInt(mapped[2], 16);
+        return isPrivateHost(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
+    }
+    if (h.startsWith('::ffff:') && h.slice(7).includes('.')) return isPrivateHost(h.slice(7));
     if (!h || h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local") || h.endsWith(".internal"))
         return true;
     if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(h)) {
         const [a, b] = h.split(".").map(Number);
-        return a === 0 || a === 10 || a === 127 || a === 169 && b === 254 || a === 172 && b >= 16 && b <= 31 || a === 192 && b === 168 || a >= 224;
+        return a === 0 || a === 10 || a === 127 || a === 100 && b >= 64 && b <= 127 || a === 169 && b === 254 || a === 172 && b >= 16 && b <= 31 || a === 192 && b === 168 || a >= 224;
     }
     if (h.includes(":"))
         return h === "::1" || h === "::" || h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe80");
@@ -120,13 +126,15 @@ function isPrivateHost(h) {
 }
 
 function directProxyAllowed(env2, hostname) {
-    if (String(env2.DISABLE_DIRECT_PROXY || "") === "1")
+    // Registered routes are the default. A raw-URL proxy requires both an
+    // explicit opt-in and an allowlist; never publish an open forward proxy.
+    if (String(env2.DISABLE_DIRECT_PROXY ?? "1") !== "0")
         return false;
     if (isPrivateHost(hostname))
         return false;
     const list = String(env2.DIRECT_PROXY_ALLOW || "").split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
     if (!list.length)
-        return true;
+        return false;
     const h = hostname.toLowerCase();
     return list.some((d) => h === d || h.endsWith("." + d));
 }

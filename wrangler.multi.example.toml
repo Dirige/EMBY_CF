@@ -1,0 +1,27 @@
+# First-install reference only. Copy to wrangler.local.multi.toml.
+# Multi and personal must not share DB or secrets. Read DEPLOY.md before deploying.
+# Existing sites must preserve their actual runtime, placement, Cron and domains.
+name = "emby-multi-refactor"
+main = "dist/multi.mjs"
+compatibility_date = "2026-10-17"
+compatibility_flags = []
+keep_vars = true
+workers_dev = false
+
+[placement]
+mode = "smart"
+
+[vars]
+BASE_DOMAIN = "fd.example.com"
+DNS_RECORD_NAME = "fd"
+USER_DOMAIN = "example.com"
+DISABLE_DIRECT_PROXY = "1"
+
+# Configure the main custom domain and user-host routes explicitly.
+# A wildcard Workers Route also requires suitable proxied DNS and TLS coverage.
+# Cron is intentionally omitted; do not overwrite an existing schedule.
+
+[[d1_databases]]
+binding = "DB"
+database_name = "replace-with-multi-database"
+database_id = "00000000-0000-0000-0000-000000000000"

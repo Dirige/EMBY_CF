@@ -11,8 +11,13 @@
 .card th, .card td { text-align: left; padding: 12px 9px; border-bottom: 1px solid var(--line); }
 .card th { font-weight: 600; color: var(--text-dim); }
 .card td { overflow-wrap: anywhere; }
-.admin-bg { background-color: var(--bg); }
-body[data-edition="multi"] .admin-bg { background-image: linear-gradient(115deg, rgba(var(--veil-rgb,6,9,15),.89), rgba(var(--veil-rgb,6,9,15),.65)), url('/bing-wallpaper'); }
+.admin-bg {
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background-color: var(--bg);
+  background-image: linear-gradient(115deg, rgba(var(--veil-rgb,6,9,15),.7), rgba(var(--veil-rgb,6,9,15),.58)), url('/bing-wallpaper');
+  background-position: center; background-size: cover; background-repeat: no-repeat;
+  opacity: .46;
+}
 @supports not (backdrop-filter: blur(1px)) { .card, .topbar, .modal-inner { background: var(--bg); } }
 @media (max-width: 680px) {
   .edition-label { display: none; }
@@ -24,4 +29,26 @@ body[data-edition="multi"] .admin-bg { background-image: linear-gradient(115deg,
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}
+.console-route-tools, .console-card-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.console-route-tools { padding: 0 0 18px; }
+.console-route-tools select { width: auto; min-width: 135px; }
+.console-card-controls { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 14px; }
+.console-select { display: flex; align-items: center; gap: 6px; margin: 0 auto 0 0; font-size: 12px; color: var(--text-dim); }
+.console-select input { width: 16px; height: 16px; }
+.console-diagnostic { margin: auto; width: min(650px, calc(100vw - 28px)); max-height: 85vh; overflow: auto; padding: 28px; color: var(--text); background: var(--surface); border: 1px solid var(--line-strong); border-radius: 20px; backdrop-filter: blur(28px); box-shadow: var(--shadow); }
+.console-diagnostic::backdrop { background: rgba(0, 0, 0, .55); backdrop-filter: blur(5px); }
+.console-diagnostic > button { float: right; }
+.console-diagnostic h2 { margin: 0 0 16px; }
+.diagnostic-results { display: grid; gap: 12px; margin: 22px 0; }
+.diagnostic-row { border: 1px solid var(--line); padding: 16px; border-radius: 12px; background: var(--surface-2); }
+.diagnostic-row strong { margin-right: 20px; }
+.diagnostic-row p { font-size: 12px; margin-top: 8px; }
+.diagnostic-ok { color: var(--ok); }
+.diagnostic-warning { color: var(--warn); }
+body[data-edition] .route-item { opacity: 1 !important; }
+.route-item[data-console-enabled="false"] { border-style: dashed; }
+@media (max-width: 680px) {
+  .console-diagnostic { padding: 20px; }
+  .console-select { width: 100%; }
 }

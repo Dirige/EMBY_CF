@@ -4,6 +4,7 @@ import { formatBytes, getShanghaiParts } from "./../../../shared/http/primitives
 import { getStatsHost, getUserDomain, resolveZoneInfo } from "./zone.js";
 import { cfGetAccountDailySeries, cfGetAccountSummary, cfGetWorkerSummary, cfGetZoneSummary, getWorkerHosts } from "./analytics.js";
 import { getBaseDomain, getCFApiToken, getTelegramChatId, getTelegramToken } from "./../../../shared/auth/session.js";
+import { notificationEnv } from '../config/notifications.js';
 
 function escapeLike(s) {
     return String(s || "").replace(/[!%_]/g, (ch) => "!" + ch);
@@ -106,9 +107,10 @@ async function handleStatsRequest(env2, url, opts = {}) {
     else {
         hostSet = await getWorkerHosts(env2);
     }
-    const acc = hostSet ? await cfGetAccountSummary(env2, dateKey, hostSet) : { error: "\u672A\u914D\u7F6E\u7EDF\u8BA1\u57DF\u540D\u8303\u56F4" };
+    let acc = hostSet ? await cfGetAccountSummary(env2, dateKey, hostSet) : { error: "\u672A\u914D\u7F6E\u7EDF\u8BA1\u57DF\u540D\u8303\u56F4" };
+    if (owner && !acc.error && (!acc.hostDim || !acc.hostMatched)) acc = { error: 'CF 未返回本用户域名数据，不使用其他用户或账户汇总' };
     const accOk = !acc.error;
-    const cf = accOk || owner ? { error: "" } : await cfGetZoneSummary(env2, dateKey);
+    const cf = accOk || owner ? { error: "" } : await cfGetZoneSummary(env2, dateKey, hostSet);
     const worker = owner ? { error: "" } : await cfGetWorkerSummary(env2, dateKey);
     const cfOk = !accOk && !owner && !cf.error;
     const statsSource = accOk ? "account" : cfOk ? "zone" : "unavailable";
@@ -128,7 +130,8 @@ async function handleStatsRequest(env2, url, opts = {}) {
             dailySeries = s.series;
     }
     const zoneInfo = owner ? { zoneId: "", zoneName: "", from: "" } : await resolveZoneInfo(env2);
-    const tgReady = Boolean(getTelegramToken(env2) && getTelegramChatId(env2));
+    const notifyEnv = await notificationEnv(env2);
+    const tgReady = Boolean(getTelegramToken(notifyEnv) && getTelegramChatId(notifyEnv));
     return json({
         error: null,
         data: {
@@ -158,8 +161,8 @@ async function handleStatsRequest(env2, url, opts = {}) {
                 zoneSource: zoneInfo.from || "",
                 hasCfToken: Boolean(getCFApiToken(env2)),
                 telegramConfigured: tgReady,
-                telegramTokenVar: getTelegramToken(env2) ? "\u5DF2\u8BFB\u53D6" : "\u672A\u8BFB\u53D6",
-                telegramChatVar: getTelegramChatId(env2) ? "\u5DF2\u8BFB\u53D6" : "\u672A\u8BFB\u53D6"
+                telegramTokenVar: getTelegramToken(notifyEnv) ? '已读取' : '未读取',
+                telegramChatVar: getTelegramChatId(notifyEnv) ? '已读取' : '未读取'
             },
             source: accOk ? "CF \u8D26\u53F7\u5206\u6790" : cfOk ? "CF Zone" : "CF \u6570\u636E\u4E0D\u53EF\u7528",
             lastUpdated: ( /* @__PURE__ */new Date()).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })

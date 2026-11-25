@@ -44,7 +44,7 @@ function buildFrontendHtml(env2) {
       <div class="term-bar"><i></i><i></i><i></i><span>~/emby-proxy \u2014 usage</span></div>
       <div class="term-body">
         <div><span class="p">$</span>https://<span class="hl">\u4F60\u7684\u57DF\u540D</span>/\u522B\u540D</div>
-        <div><span class="p">$</span>https://<span class="hl">\u4F60\u7684\u57DF\u540D</span>/https://emby.example.com:8096</div>
+        <div class="dim"># 仅已登记线路可用；原始地址代理默认关闭</div>
         <div class="dim"># \u6DFB\u52A0\u670D\u52A1\u540E\u8BF7\u52A1\u5FC5\u624B\u52A8\u6D4B\u8BD5 \xB7 \u6076\u610F\u5237\u63A5\u53E3\u5C06\u5C01\u7981 IP</div>
       </div>
     </div>
@@ -98,7 +98,7 @@ function buildLoginHtml() {
     <div style="text-align:center;margin-bottom:26px">
       <div class="hero-kicker" style="margin-bottom:10px">MULTI&nbsp;USER&nbsp;ACCESS</div>
       <h1 style="font-size:1.5em;font-weight:800;letter-spacing:-.01em">\u767B\u5F55</h1>
-      <p class="muted" style="margin-top:8px">\u666E\u901A\u7528\u6237\u8F93\u5165\u7528\u6237\u540D + \u5BC6\u7801\uFF1B\u7BA1\u7406\u5458\u7528\u6237\u540D\u586B admin\uFF08\u6216\u7559\u7A7A\uFF09\u5E76\u4F7F\u7528\u7BA1\u7406\u5BC6\u94A5</p>
+      <p class="muted" style="margin-top:8px">普通用户输入用户名 + 密码；内置管理员填 admin（或留空），使用网页设置的密码；尚未改密时使用初始管理密钥。</p>
     </div>
     <form onsubmit="login();return false">
       <input id="usernameInput" placeholder="\u7528\u6237\u540D\uFF08\u7BA1\u7406\u5458\u586B admin \u6216\u7559\u7A7A\uFF09" autocomplete="username" autocapitalize="off" style="margin-bottom:10px">
@@ -287,6 +287,34 @@ function buildAdminHtml(session, env2) {
       <p class="form-hint">\u9700\u8981\u7ED9 Worker \u914D\u7F6E Cron \u89E6\u53D1\u5668\uFF0C\u4F8B\u5982 <code>0 15 * * *</code>\uFF1B\u4E5F\u53EF\u4EE5\u968F\u65F6\u70B9\u9876\u90E8\u7684\u300C\u53D1\u9001\u65E5\u62A5\u300D\u624B\u52A8\u53D1\u9001</p>
     </div>
     <div class="form-group">
+      <h3>通知 · Telegram</h3>
+      <label class="checkbox-label"><input type="checkbox" id="setRouteAlerts" checked> 发送线路异常与恢复通知</label>
+      <p class="form-hint">告警优先显示安全的线路备注，不发送线路地址、入口、用户名或原始错误；备注为空或疑似含地址、凭据时回退到线路卡片上的通知编号。</p>
+      <label for="tgBotToken">Bot Token</label>
+      <input id="tgBotToken" type="password" autocomplete="new-password" maxlength="256" placeholder="填写新 Token；留空保持不变">
+      <label for="tgChatId">Chat ID</label>
+      <input id="tgChatId" inputmode="text" maxlength="21" placeholder="数字 ID；群组通常为负数">
+      <p class="form-hint" id="tgConfigStatus"></p>
+      <p class="form-hint" id="tgLastStatus"></p>
+      <div class="modal-actions">
+        <button class="btn" id="btnSaveTelegram" onclick="saveTelegram(this)">保存 TG 配置</button>
+        <button class="btn" id="btnTestTelegram" onclick="testTelegramConfig(this)">测试发送</button>
+        <button class="btn btn-danger" onclick="clearTelegram(this)">清除并停用 TG</button>
+      </div>
+      <p class="form-hint">TG 配置单独保存，AES-GCM 加密存储，不回显、不导出；清除后不回退环境变量。使用独立加密主密钥，或从原 SESSION_SECRET 分用途派生，不改现有绑定。</p>
+    </div>
+    <div class="form-group">
+      <h3>安全 · 修改登录密码</h3>
+      <label for="currentPassword">当前密码</label>
+      <input id="currentPassword" type="password" autocomplete="current-password" maxlength="1024">
+      <label for="newPassword">新密码（12–128 个字符）</label>
+      <input id="newPassword" type="password" autocomplete="new-password" minlength="12" maxlength="128">
+      <label for="confirmPassword">确认新密码</label>
+      <input id="confirmPassword" type="password" autocomplete="new-password" minlength="12" maxlength="128">
+      <p class="form-hint">只修改当前账号；该账号所有旧会话失效，不影响其他用户。内置管理员改密后原管理密钥不再作为第二个登录密码。</p>
+      <button class="btn" id="btnChangePassword" onclick="updatePassword(this)">修改密码并退出</button>
+    </div>
+    <div class="form-group">
       <label>\u6BCF IP \u6BCF\u5206\u949F\u8BF7\u6C42\u4E0A\u9650\uFF080 = \u4E0D\u9650\u5236\uFF09</label>
       <input id="setRate" type="number" min="0" placeholder="0">
       <p class="form-hint">\u4EC5\u9650\u5236 API \u7C7B\u8BF7\u6C42\uFF0C\u4E0D\u5F71\u54CD\u56FE\u7247\u548C\u89C6\u9891\u6D41</p>
@@ -296,6 +324,15 @@ function buildAdminHtml(session, env2) {
       <input id="setManual" placeholder="\u4F8B\u5982 example-cdn.com, other.net">
       <label style="margin-top:12px">\u57DF\u540D\u6620\u5C04\u89C4\u5219\uFF08JSON\uFF0C\u65E5\u672C\u673A\u623F\u4F7F\u7528\uFF09</label>
       <textarea id="setRules" rows="2" placeholder='{"example.com":"1.2.3.4"}'></textarea>
+    </div>
+    <div class="form-group">
+      <label>X-Frame-Options 响应头</label>
+      <select id="setXfo">
+        <option value="">SAMEORIGIN（默认，仅同源可嵌入）</option>
+        <option value="deny">DENY（完全禁止嵌入）</option>
+        <option value="off">不发送（允许任意站点 iframe 嵌入）</option>
+      </select>
+      <p class="form-hint">只影响代理内容；管理后台始终为 SAMEORIGIN。</p>
     </div>
     <div class="form-group">
       <label>\u591A\u4EBA\u7248\u8BF4\u660E</label>
@@ -313,7 +350,7 @@ function buildAdminHtml(session, env2) {
         <span class="form-hint" id="relayTestResult" style="margin:0"></span>
       </div>
       <div id="relayUsage" class="muted" style="margin-top:10px;font-size:12px;line-height:1.7">VPS \u7EDF\u8BA1\u52A0\u8F7D\u4E2D...</div>
-      <p class="form-hint">\u4E2D\u7EE7\u884C\u4E3A\uFF1A\u76F4\u8FDE\u4F18\u5148\uFF0C\u76F4\u8FDE\u5931\u8D25\uFF08\u7F51\u7EDC\u9519\u8BEF/401/403/451\uFF09\u624D\u81EA\u52A8\u8D70 VPS\uFF1BVPS \u6D41\u91CF\u9650\u989D\u8D85\u9650\u65F6\u81EA\u52A8\u56DE\u843D\u76F4\u8FDE\uFF0C\u7528\u6237\u65E0\u611F\u3002\u8986\u76D6\u6240\u6709\u7528\u6237\u8DEF\u7531\u548C <code>/https://\u6E90\u7AD9:\u7AEF\u53E3</code> \u76F4\u8FDE\u4EE3\u7406\u8DEF\u5F84\u3002</p>
+      <p class="form-hint">自动：GET/HEAD 遇到 401/403/451、连接失败、超时或指定网关错误时尝试一次 VPS；登录和 PlaybackInfo 的小型 POST 仅重试明确的 401/403/451。成功后同一用户、线路、源站和 CF 地区优先 VPS 2 分钟，再由只读请求探测恢复。VPS 不可用时只读请求可回落直连，已发出的写请求不重发；下载慢不会中途重发视频。独立推流的 302 映射保留；原始地址代理仍受独立访问开关限制。</p>
     </div>
     <div class="modal-actions">
       <button class="btn" onclick="runNow()">\u7ACB\u5373\u5065\u5EB7\u68C0\u67E5</button>
@@ -450,6 +487,7 @@ function buildAdminHtml(session, env2) {
     <div class="form-group">
       <label>\u5907\u6CE8\u540D</label>
       <input id="routeRemark" placeholder="\u4F8B\u5982\uFF1A\u6211\u7684 Emby \u670D\u52A1\u5668">
+      <p class="form-hint">通知会显示通过安全检查的简短服名；请勿在备注里放地址、用户名、密码、Token 或签名参数。</p>
     </div>
     <div class="form-group">
       <label>\u8DEF\u5F84 (prefix)</label>
@@ -473,7 +511,7 @@ function buildAdminHtml(session, env2) {
       <label class="checkbox-label" style="margin-top:12px">
         <input type="checkbox" id="routeCompat"> \u517C\u5BB9\u6A21\u5F0F
       </label>
-      <p class="form-hint">\u517C\u5BB9\u6A21\u5F0F\u9002\u7528\u4E8E\u90E8\u5206\u65E0\u6CD5\u6B63\u5E38\u64AD\u653E\u7684 Emby \u670D\u52A1\u5668\uFF0C\u5F00\u542F\u540E\u4E0D\u91CD\u5199\u5A92\u4F53\u6D41\u5730\u5740\uFF0C\u7531\u5BA2\u6237\u7AEF\u76F4\u8FDE\u6E90\u7AD9\u64AD\u653E</p>
+      <p class="form-hint">兼容模式调整回源请求头，并由 Worker 校验和跟随跳转；配置推流地址时仍保留内部 302 映射，不会跳过安全校验。</p>
     </div>
     <div class="form-group">
       <label>\u5BA2\u6237\u7AEF IP</label>
@@ -503,6 +541,14 @@ function buildAdminHtml(session, env2) {
 </div>
 
 ${adminModals}
+
+${isAdmin2 ? '' : `<div id="modalPassword" class="modal"><div class="modal-inner">
+  <div class="modal-header"><h2 class="modal-title">修改我的密码</h2><p class="modal-desc">只撤销当前账号的旧会话，不影响其他用户。</p></div>
+  <div class="form-group"><label for="currentPassword">当前密码</label><input id="currentPassword" type="password" autocomplete="current-password" maxlength="1024"></div>
+  <div class="form-group"><label for="newPassword">新密码（12–128 个字符）</label><input id="newPassword" type="password" autocomplete="new-password" minlength="12" maxlength="128"></div>
+  <div class="form-group"><label for="confirmPassword">确认新密码</label><input id="confirmPassword" type="password" autocomplete="new-password" minlength="12" maxlength="128"></div>
+  <div class="modal-actions"><button class="btn" onclick="closeModal('modalPassword')">取消</button><button class="btn btn-solid" id="btnChangePassword" onclick="updatePassword(this)">修改密码并退出</button></div>
+</div></div>`}
 
 <script>window.__EMBY_PAGE__ = ${JSON.stringify({ isAdmin: isAdmin2, username }).replace(/</g, "\\u003c")};
 ${THEME_LOGIC}

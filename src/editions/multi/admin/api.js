@@ -1,12 +1,11 @@
 // Baseline: 4e0357e. Edition-specific behavior is intentionally retained.
-import { getBaseDomain, getDnsRecordName, getTelegramChatId, getTelegramToken, logoutResponse, toFqdn } from "./../../../shared/auth/session.js";
+import { getBaseDomain, getDnsRecordName, logoutResponse, toFqdn } from "./../../../shared/auth/session.js";
 import { ADMIN_UID, changePassword, getUserById, getUserByUsername, isAdmin, publicUser } from "./../auth/session.js";
 import { json } from "./../../../shared/http/responses.js";
 import { sendDailyReport } from "./../integrations/analytics.js";
 import { auditLog } from "./../../../shared/observability/audit.js";
-import { reportFailureHint } from "./../../../shared/integrations/analytics.js";
 import { handleStatsRequest } from "./../integrations/stats.js";
-import { SETTING_KEYS, getSettings, setSetting, invalidateSettingsCache } from "./../config/settings.js";
+import { SETTING_KEYS, getSettings, setSetting, invalidateSettingsCache, publicSettings } from "./../config/settings.js";
 import { normalizeDnsTarget, normalizePrefix, readJson, splitTargets, validatePrefix } from "./../../../shared/admin/api.js";
 import { normalizeRelayBase } from "./../relay/protocol.js";
 import { CURRENT_VERSION } from "./../version.js";
@@ -22,17 +21,47 @@ import { adminCreateUser, adminDeleteUser, adminListUsers, adminResetData, admin
 import { adminClearInvites, adminCreateInvite, adminDeleteInvite, adminListInvites } from "./../users/invites.js";
 import { userDnsInfo, userEnsureDNS, userEntryHost, userUpdateDns } from "./../users/dns.js";
 import { DEFAULT_USER_ROUTE_LIMIT } from "./../storage/schema.js";
+import { diagnoseRoute } from '../../../shared/observability/diagnostics.js';
+import { inspectImport } from '../../../shared/admin/import-plan.js';
+import { credentialState } from '../auth/password.js';
+import { notificationStatus, saveTelegramConfig, testTelegram } from '../config/notifications.js';
+import { notificationId } from '../integrations/alert-privacy.js';
 
 async function handleAdminApi(request, env2, url, session) {
     const adminActor = String(session?.username || "admin");
-    if (url.pathname === "/admin/api/logout" && request.method === "POST")
-        return logoutResponse();
     if (!await isAdmin(request, env2))
         return new Response("Unauthorized", { status: 401 });
     if (request.method !== "GET" && request.method !== "HEAD") {
         const origin = request.headers.get("Origin");
         if (origin && origin !== url.origin)
             return json({ error: "Forbidden origin" }, 403);
+    }
+    if (url.pathname === '/admin/api/logout' && request.method === 'POST') return logoutResponse();
+    if (['/admin/api/notifications', '/admin/api/notifications/test', '/admin/api/security/password'].includes(url.pathname)) {
+        if (request.method === 'POST' && (request.headers.get('Origin') !== url.origin || !request.headers.get('Content-Type')?.startsWith('application/json'))) {
+            return json({ error: '必须使用同源 JSON 请求' }, 403);
+        }
+        if (url.pathname === '/admin/api/notifications') {
+            if (request.method === 'GET') return json({ success: true, ...await notificationStatus(env2) });
+            if (request.method === 'POST') {
+                const data = await readJson(request);
+                if (!data) return json({ error: '无效 JSON' }, 400);
+                try { await saveTelegramConfig(env2, data); }
+                catch { return json({ error: '保存失败，请检查 Token、数字 Chat ID 和通知加密密钥' }, 400); }
+                await auditLog(env2, 'notification.save', data.clear === true ? 'disabled' : 'updated');
+                return json({ success: true, ...await notificationStatus(env2) });
+            }
+        }
+        if (url.pathname === '/admin/api/notifications/test' && request.method === 'POST') {
+            const result = await testTelegram(env2);
+            await auditLog(env2, 'notification.test', result.ok ? 'ok' : 'failed');
+            return json(result, result.ok ? 200 : 502);
+        }
+        if (url.pathname === '/admin/api/security/password') {
+            if (request.method === 'GET') return json({ success: true, customPassword: session.uid === ADMIN_UID ? Boolean((await credentialState(env2)).record) : true });
+            if (request.method === 'POST') return changePassword(request, env2, session);
+        }
+        return json({ error: 'Method not allowed' }, 405);
     }
     if (url.pathname === "/admin/api/report/send" && request.method === "POST") {
         const out = await sendDailyReport(env2, url.searchParams.get("date") || "");
@@ -43,27 +72,39 @@ async function handleAdminApi(request, env2, url, session) {
             telegram: out.telegram,
             webhook: out.webhook,
             preview: out.text,
-            hint: out.ok ? "" : reportFailureHint(env2, out)
+            hint: out.ok ? '' : '发送失败，请检查通知配置和发送权限'
         }, out.ok ? 200 : 502);
     }
     if (url.pathname === "/admin/api/stats" && request.method === "GET") {
         return handleStatsRequest(env2, url);
     }
+    if (url.pathname === '/admin/api/routes/diagnose' && request.method === 'POST') {
+        const data = await readJson(request) || {};
+        const route = await env2.DB.prepare('SELECT * FROM routes WHERE prefix = ? AND created_by = ?').bind(normalizePrefix(data.prefix), adminActor).first();
+        if (!route) return json({ error: '路由不存在' }, 404);
+        const settings = await getSettings(env2);
+        return json(await diagnoseRoute(route, request, { edition: 'multi', relayConfigured: !!(settings.relayEnabled && settings.relaySecret && settings.relayUrl) }));
+    }
+    if (url.pathname === '/admin/api/import/preview' && request.method === 'POST') {
+        const data = await readJson(request);
+        const existing = (await env2.DB.prepare('SELECT prefix, created_by FROM routes').all()).results || [];
+        const plan = inspectImport(data, existing.map(route => route.prefix), SETTING_KEYS);
+        if (plan.success) {
+            const blocked = new Set(existing.filter(route => route.created_by !== adminActor).map(route => route.prefix));
+            for (const prefix of plan.overwritten.filter(prefix => blocked.has(prefix))) plan.invalid.push({ prefix, reason: '不是当前管理员的路由，无法覆盖' });
+            plan.overwritten = plan.overwritten.filter(prefix => !blocked.has(prefix));
+            plan.canImport = plan.invalid.length === 0;
+        }
+        return json(plan, plan.success ? 200 : 400);
+    }
     if (url.pathname === "/admin/api/settings") {
         if (request.method === "GET") {
             const st = await getSettings(env2);
-            const safeRaw = { ...st.raw };
-            if (safeRaw.relay_secret)
-                safeRaw.relay_secret = safeRaw.relay_secret.slice(0, 6) + "...";
+            const safeRaw = publicSettings(st.raw);
             return json({
                 success: true,
                 settings: safeRaw,
-                notify: {
-                    telegram: Boolean(getTelegramToken(env2) && getTelegramChatId(env2)),
-                    webhook: Boolean(env2.NOTIFY_WEBHOOK),
-                    tokenVar: getTelegramToken(env2) ? "\u5DF2\u8BFB\u53D6" : "\u672A\u8BFB\u53D6",
-                    chatVar: getTelegramChatId(env2) ? "\u5DF2\u8BFB\u53D6" : "\u672A\u8BFB\u53D6"
-                }
+                notify: await notificationStatus(env2)
             });
         }
         if (request.method === "POST") {
@@ -92,7 +133,7 @@ async function handleAdminApi(request, env2, url, session) {
             relay_url: st.relayUrl,
             relay_enabled: st.relayEnabled ? "1" : "0",
             has_secret: !!st.relaySecret,
-            secret_hint: st.relaySecret ? st.relaySecret.slice(0, 6) + "..." + st.relaySecret.slice(-4) : "",
+            secret_hint: st.relaySecret ? '已设置，留空保持不变' : '',
             active: !!(st.relayEnabled && st.relayUrl && st.relaySecret)
         });
     }
@@ -120,22 +161,19 @@ async function handleAdminApi(request, env2, url, session) {
             return json({ ok: false, error: "\u8BF7\u5148\u586B\u5199\u4E2D\u7EE7\u5730\u5740\u548C\u5BC6\u94A5\u5E76\u4FDD\u5B58" });
         const t0 = Date.now();
         try {
-            const res = await fetch(new Request(base + "/_relay/health", { headers: { "X-Relay-Key": st.relaySecret } }));
-            const text = (await res.text()).slice(0, 400);
-            let body = null;
-            try {
-                body = JSON.parse(text);
-            }
-            catch (_) {
-            }
-            const result = { ok: res.ok, status: res.status, ms: Date.now() - t0, version: body?.version || "", limits: body?.limits || null, usage: body?.usage || null };
-            if (res.ok && !st.relayEnabled) {
+            const res = await fetch(new Request(base + '/_relay/health', { headers: { 'X-Relay-Key': st.relaySecret }, signal: AbortSignal.timeout(15000) }));
+            const body = await readJson(res, { limit: 16384, timeoutMs: 5000 });
+            const ok = res.ok && body?.ok === true;
+            const version = typeof body?.version === 'string' && /^[a-z0-9._-]{1,64}$/i.test(body.version) ? body.version : '';
+            const result = { ok, status: res.status, ms: Date.now() - t0, version, limits: body?.limits || null, usage: body?.usage || null,
+                ...(ok ? {} : { error: '中继健康响应未通过校验' }) };
+            if (ok && !st.relayEnabled) {
                 await setSetting(env2, "relay_enabled", "1");
                 result.auto_enabled = true;
             }
-            if (res.ok) {
+            if (ok) {
                 try {
-                    await auditLog(env2, "relay.test.ok", `${base} ${result.ms}ms ${result.version}`);
+                    await auditLog(env2, 'relay.test.ok', `${result.ms}ms version=${result.version}`);
                 }
                 catch (_) {
                 }
@@ -143,7 +181,7 @@ async function handleAdminApi(request, env2, url, session) {
             return json(result);
         }
         catch (e) {
-            return json({ ok: false, ms: Date.now() - t0, error: String(e?.message || e).slice(0, 200) });
+            return json({ ok: false, ms: Date.now() - t0, error: '中继健康测试失败，请检查连接、密钥和健康响应' });
         }
     }
     if (url.pathname === "/admin/api/relay/usage" && request.method === "GET") {
@@ -167,12 +205,12 @@ async function handleAdminApi(request, env2, url, session) {
         catch (_) {
         }
         try {
-            const res = await fetch(new Request(base + "/_relay/health", { headers: { "X-Relay-Key": st.relaySecret } }));
-            const body = await res.json().catch(() => null);
-            return json({ ok: res.ok, usage: body?.usage || null, limits: body?.limits || null, version: body?.version || "", uptime: body?.uptime || "", fallback24, fallbackErr24 });
+            const res = await fetch(new Request(base + '/_relay/health', { headers: { 'X-Relay-Key': st.relaySecret }, signal: AbortSignal.timeout(15000) }));
+            const body = await readJson(res, { limit: 16384, timeoutMs: 5000 });
+            return json({ ok: res.ok && body?.ok === true, usage: body?.usage || null, limits: body?.limits || null, version: body?.version || '', uptime: body?.uptime || '', fallback24, fallbackErr24 });
         }
         catch (e) {
-            return json({ ok: false, error: String(e?.message || e).slice(0, 200), fallback24, fallbackErr24 });
+            return json({ ok: false, error: '中继状态读取失败', fallback24, fallbackErr24 });
         }
     }
     if (url.pathname === "/admin/api/audit" && request.method === "GET") {
@@ -183,7 +221,7 @@ async function handleAdminApi(request, env2, url, session) {
         const routes = (await env2.DB.prepare("SELECT prefix, target, stream_target, remark, cache_img, compat_mode, ip_mode, sort_order, enabled, custom_headers, ip_allow, ip_block FROM routes WHERE created_by = ? ORDER BY sort_order, prefix").bind(adminActor).all()).results || [];
         const domains = (await env2.DB.prepare("SELECT domain, name FROM optimized_domains WHERE is_builtin = 0").all()).results || [];
         const st = await getSettings(env2);
-        const body = JSON.stringify({ version: CURRENT_VERSION, exportedAt: ( /* @__PURE__ */new Date()).toISOString(), routes, domains, settings: st.raw }, null, 2);
+        const body = JSON.stringify({ version: CURRENT_VERSION, exportedAt: ( /* @__PURE__ */new Date()).toISOString(), routes, domains, settings: publicSettings(st.raw) }, null, 2);
         return new Response(body, { headers: {
                 "Content-Type": "application/json; charset=utf-8",
                 "Content-Disposition": 'attachment; filename="proxy-config-' + ( /* @__PURE__ */new Date()).toISOString().slice(0, 10) + '.json"',
@@ -309,7 +347,7 @@ async function handleAdminApi(request, env2, url, session) {
             for (const h of health)
                 if (h.down)
                     downMap[h.prefix] = (downMap[h.prefix] || 0) + 1;
-            return json((results || []).map((r) => ({ ...r, down_count: downMap[r.prefix] || 0 })));
+            return json(await Promise.all((results || []).map(async r => ({ ...r, notification_id: await notificationId(env2, r.prefix), down_count: downMap[r.prefix] || 0 }))));
         }
         if (request.method === "POST") {
             const data = await readJson(request);

@@ -39,3 +39,15 @@ dist/
 playwright-report/
 test-results/
 coverage/
+
+# Operator-specific deployment config; publish examples only.
+/wrangler.personal.acceptance.toml
+/wrangler.local*.toml
+/releases/deploy-offline-*.zip
+
+# Build products and private runtime configuration for the optional relay.
+/relay/emby-relay
+/relay/config.json
+/relay/stats.json
+*.pem
+*.key

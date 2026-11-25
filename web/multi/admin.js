@@ -359,14 +359,8 @@ async function ensureUserDNS(btn) {
 }
 
 async function changePassword() {
-  const oldPassword = prompt('请输入原密码');
-  if (!oldPassword) return;
-  const newPassword = prompt('请输入新密码（至少 6 位）');
-  if (!newPassword) return;
-  const confirmPassword = prompt('请再次输入新密码');
-  if (newPassword !== confirmPassword) { showToast('两次输入不一致'); return; }
-  const x = await postJson('/api/user/password', { oldPassword: oldPassword, newPassword: newPassword });
-  showToast(x.ok ? '✅ 密码已修改' : ('❌ ' + (x.data.error || '修改失败')));
+  ['currentPassword', 'newPassword', 'confirmPassword'].forEach(id => { document.getElementById(id).value = ''; });
+  openModal('modalPassword');
 }
 
 // ===== 管理员：用户 / 邀请码 =====
@@ -567,9 +561,12 @@ async function importConfig(input) {
   const f = input.files && input.files[0];
   input.value = '';
   if (!f) return;
+  if (f.size > 2 * 1024 * 1024) { showToast('配置文件不能超过 2 MiB，请分批导入'); return; }
   let data;
   try { data = JSON.parse(await f.text()); } catch (e) { showToast('不是合法的 JSON 文件'); return; }
-  if (!confirm('导入将按路径覆盖同名路由，并追加不存在的优选域名，确定继续？')) return;
+  const preview = await postJson('/admin/api/import/preview', data);
+  if (!preview.ok || !preview.data.canImport) { showToast(preview.data.error || '预检发现无效或重复线路，请修正配置后重试'); return; }
+  if (!confirm('只读预检完成：新增 ' + preview.data.added.length + ' 条，覆盖 ' + preview.data.overwritten.length + ' 条；设置项 ' + preview.data.settings.length + ' 个。导入后将修改本地配置，确定继续？')) return;
   const x = await postJson('/admin/api/import', data);
   if (!x.ok) { showToast(x.data.error || '导入失败'); return; }
   showToast('导入完成：路由 ' + x.data.routes + '，域名 ' + x.data.domains + (x.data.skipped.length ? '，跳过 ' + x.data.skipped.length : ''));
@@ -582,16 +579,77 @@ async function openSettings() {
   const s = d.settings || {};
   document.getElementById('setHealth').checked = s.health_check === '1';
   document.getElementById('setDailyReport').checked = String(s.tg_daily_report == null ? '1' : s.tg_daily_report) !== '0';
+  document.getElementById('setRouteAlerts').checked = String(s.tg_route_alerts ?? '1') !== '0';
   document.getElementById('setRate').value = s.rate_limit_per_min || '0';
+  document.getElementById('setXfo').value = s.x_frame_options || '';
   document.getElementById('setManual').value = s.manual_redirect_domains || '';
   document.getElementById('setRules').value = s.domain_proxy_rules || '';
   const n = d.notify || {};
   document.getElementById('notifyHint').textContent = (n.telegram || n.webhook)
     ? '通知渠道：' + [n.telegram ? 'Telegram' : '', n.webhook ? 'Webhook' : ''].filter(Boolean).join(' + ')
-      + '（Token: ' + (n.tokenVar || '—') + '，Chat: ' + (n.chatVar || '—') + '）'
-    : '尚未配置通知：请设置 TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID（兼容 TG_*），或 NOTIFY_WEBHOOK';
+    : '尚未配置通知，请在下方填写 Telegram 配置';
+  renderTelegramStatus(n);
+  ['tgBotToken', 'currentPassword', 'newPassword', 'confirmPassword'].forEach(id => { document.getElementById(id).value = ''; });
   loadRelayCard();
   openModal('modalSettings');
+}
+
+function renderTelegramStatus(n) {
+  document.getElementById('tgChatId').value = n.chatId || '';
+  document.getElementById('tgBotToken').placeholder = n.tokenConfigured ? 'Token 已配置（留空保持不变）' : '填写 Bot Token';
+  document.getElementById('tgConfigStatus').textContent = n.error || ('来源：' + ({ web: '网页加密配置', environment: 'Worker 环境变量', disabled: '已停用' }[n.source] || '未知') + (n.encryptionReady ? ' · 加密密钥已就绪' : ' · 请先配置独立加密主密钥或强 SESSION_SECRET'));
+  document.getElementById('tgLastStatus').textContent = n.last ? '最近通知：' + n.last.at + ' · ' + (n.last.ok ? '成功' : '失败') + '（' + n.last.kind + '）' : '暂无发送记录';
+}
+
+async function saveTelegram(btn) {
+  btn.disabled = true;
+  try {
+    const x = await postJson('/admin/api/notifications', { token: document.getElementById('tgBotToken').value, chatId: document.getElementById('tgChatId').value });
+    if (!x.ok) { showToast(x.data.error || '保存失败'); return; }
+    document.getElementById('tgBotToken').value = '';
+    renderTelegramStatus(x.data);
+    showToast('TG 配置已加密保存');
+  } catch { showToast('请求失败，请检查连接'); } finally { btn.disabled = false; }
+}
+
+async function testTelegramConfig(btn) {
+  if (document.getElementById('tgBotToken').value) { showToast('请先保存 TG 配置再测试'); return; }
+  btn.disabled = true;
+  try {
+    const x = await postJson('/admin/api/notifications/test', {});
+    showToast(x.ok ? '测试通知已发送' : x.data.error || '发送失败');
+    const response = await fetch('/admin/api/notifications');
+    if (response.ok) renderTelegramStatus(await response.json());
+  } catch { showToast('请求失败，请检查连接'); } finally { btn.disabled = false; }
+}
+
+async function clearTelegram(btn) {
+  if (!confirm('确定清除并停用 Telegram？不会回退使用 Worker 环境变量。Webhook 不受影响。')) return;
+  btn.disabled = true;
+  try {
+    const x = await postJson('/admin/api/notifications', { clear: true });
+    if (!x.ok) { showToast(x.data.error || '清除失败'); return; }
+    document.getElementById('tgBotToken').value = '';
+    renderTelegramStatus(x.data);
+    showToast('Telegram 已停用');
+  } catch { showToast('请求失败，请检查连接'); } finally { btn.disabled = false; }
+}
+
+async function updatePassword(btn) {
+  const currentPassword = document.getElementById('currentPassword').value;
+  const newPassword = document.getElementById('newPassword').value;
+  const confirmPassword = document.getElementById('confirmPassword').value;
+  if (newPassword.length < 12 || newPassword.length > 128 || newPassword !== confirmPassword) { showToast('新密码须为 12–128 个字符且两次一致'); return; }
+  if (!confirm('修改后当前账号的所有旧会话都会失效，确定继续？')) return;
+  btn.disabled = true;
+  try {
+    const x = await postJson(IS_ADMIN ? '/admin/api/security/password' : '/api/user/password', { currentPassword, newPassword, confirmPassword });
+    if (!x.ok) { showToast(x.data.error || '修改失败'); return; }
+    location.href = '/';
+  } catch { showToast('请求失败，请检查连接'); } finally {
+    ['currentPassword', 'newPassword', 'confirmPassword'].forEach(id => { document.getElementById(id).value = ''; });
+    btn.disabled = false;
+  }
 }
 
 // ===== VPS 中继配置卡（v6.8.0；v6.8.3 增加用量统计展示）=====
@@ -663,7 +721,7 @@ async function testRelay() {
   if (d.ok) {
     el.textContent = '联通 ' + d.ms + 'ms' + (d.version ? ' · ' + d.version : '') + (d.auto_enabled ? ' · 已自动启用中继' : '');
     document.getElementById('setRelayEnabled').checked = true;
-    showToast('中继联通，所有路由已自动启用');
+    showToast('中继健康测试通过；真实登录与播放仍需验证');
     loadRelayUsage();
   } else {
     el.textContent = '失败' + (d.error ? '：' + d.error : '（HTTP ' + d.status + '）');
@@ -674,12 +732,14 @@ async function saveSettings() {
   const x = await postJson('/admin/api/settings', {
     health_check: document.getElementById('setHealth').checked ? '1' : '0',
     tg_daily_report: document.getElementById('setDailyReport').checked ? '1' : '0',
+    tg_route_alerts: document.getElementById('setRouteAlerts').checked ? '1' : '0',
     rate_limit_per_min: document.getElementById('setRate').value || '0',
+    x_frame_options: document.getElementById('setXfo').value || '',
     manual_redirect_domains: document.getElementById('setManual').value.trim(),
     domain_proxy_rules: document.getElementById('setRules').value.trim()
   });
   if (!x.ok) { showToast(x.data.error || '保存失败'); return; }
-  await saveRelay();
+  if (!await saveRelay()) return;
   closeModal('modalSettings');
   showToast('设置已保存');
 }
@@ -711,6 +771,9 @@ var AUDIT_ACTIONS = {
   'user.update': '更新用户',
   'user.delete': '删除用户',
   'user.password': '修改密码',
+  'security.password': '修改管理员密码',
+  'notification.save': '保存通知配置',
+  'notification.test': '测试通知',
   'user.dns': '绑定用户 DNS',
   'user.route.save': '保存用户路由',
   'user.route.delete': '删除用户路由',
@@ -722,6 +785,8 @@ var AUDIT_ACTIONS = {
 var AUDIT_SETTINGS = {
   health_check: '线路健康检查',
   tg_daily_report: '每日日报',
+  tg_route_alerts: '线路异常和恢复通知',
+  x_frame_options: '代理页面嵌入策略',
   rate_limit_per_min: '每分钟请求限制',
   manual_redirect_domains: '手动跳转域名',
   domain_proxy_rules: '域名代理规则'

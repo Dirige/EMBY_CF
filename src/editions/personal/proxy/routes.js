@@ -3,6 +3,7 @@ import { ROUTE_CACHE_TTL, normalizePrefix, splitTargets } from "./../../../share
 import { errResponse } from "./../http/responses.js";
 import { ipMatches, parseHeaderLines, parseIpList } from "./../../../shared/http/validation.js";
 import { normalizeIpMode } from "./../../../shared/http/primitives.js";
+import { normalizeRelayMode } from '../relay/mode.js';
 
 var routeCache = /* @__PURE__ */ new Map();
 
@@ -61,7 +62,7 @@ async function resolveProxyTarget(request, env2, url) {
             upstreamUrls.push(target.replace(/\/+$/, "") + rest + url.search);
         }
     }
-    return { upstreamUrls, enableCache, compatMode, clientIpMode: normalizeIpMode(route.ip_mode), matchedPrefix: route.prefix, customHeaders: parseHeaderLines(route.custom_headers).headers, relayMode: route.use_relay === "on" || route.use_relay === "image" ? route.use_relay : "off" };
+    return { upstreamUrls, enableCache, compatMode, clientIpMode: normalizeIpMode(route.ip_mode), matchedPrefix: route.prefix, customHeaders: parseHeaderLines(route.custom_headers).headers, relayMode: normalizeRelayMode(route.use_relay, 'off') };
 }
 
 export { routeCache, clearRouteCache, getRoute, resolveProxyTarget };

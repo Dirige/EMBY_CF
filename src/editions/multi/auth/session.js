@@ -1,5 +1,5 @@
 // Baseline: 4e0357e. Edition-specific behavior is intentionally retained.
-import { LOGIN_MAX_FAILS, LOGIN_WINDOW_MS, SESSION_COOKIE, envStr, getAdminToken, getCookie, getDnsRecordName, toHex } from "./../../../shared/auth/session.js";
+import { LOGIN_MAX_FAILS, LOGIN_WINDOW_MS, SESSION_COOKIE, envStr, getAdminToken, getCookie, getDnsRecordName, logoutResponse, toHex } from "./../../../shared/auth/session.js";
 import { clearOwnerCache } from "./../proxy/routes.js";
 import { json } from "./../../../shared/http/responses.js";
 import { readJson } from "./../../../shared/admin/api.js";
@@ -7,6 +7,8 @@ import { DEFAULT_USER_ROUTE_LIMIT, RESERVED_SUBDOMAINS, USERNAME_RE } from "./..
 import { auditLog } from "./../../../shared/observability/audit.js";
 import { provisionUserDns } from "./../users/dns.js";
 import { getStatsHost } from "./../integrations/zone.js";
+import { credentialState, verifyAdminPassword, changeAdminPassword } from './password.js';
+import { getPrivate, privateStore } from '../config/private-store.js';
 
 var SESSION_TTL_SEC = 7 * 24 * 3600;
 
@@ -35,8 +37,24 @@ async function safeEqual(a, b, secret) {
     return d === 0;
 }
 
-function sessionSecret(env2) {
-    return envStr(env2, "SESSION_SECRET") || getAdminToken(env2) || "";
+async function sessionSecret(env2, uid = ADMIN_UID, epoch = undefined) {
+    const root = envStr(env2, "SESSION_SECRET") || getAdminToken(env2) || "";
+    if (!root) return '';
+    if (epoch === undefined) {
+        epoch = uid === ADMIN_UID ? (await credentialState(env2)).record?.epoch ?? null
+            : await getPrivate(env2, 'user_epoch:' + uid);
+    }
+    if (epoch === null) return root;
+    if (!/^[a-f0-9]{64}$/.test(epoch)) throw new Error('会话配置无效');
+    return hmacHex(root, 'multi-session:' + uid + ':epoch:' + epoch);
+}
+
+async function userCredentialState(env2, field, value) {
+    await privateStore(env2);
+    // Read credentials and their epoch in one SQLite snapshot. A cached old
+    // password must never mint a token using a newer password's signing key.
+    return env2.DB.prepare(`SELECT u.*, (SELECT value FROM multi_private WHERE key = 'user_epoch:' || u.id) AS _session_epoch
+        FROM users u WHERE ${field === 'id' ? 'id' : 'username'} = ?`).bind(value).first();
 }
 
 async function makeSessionToken(secret, uid = ADMIN_UID) {
@@ -166,21 +184,29 @@ async function getUserByUsername(env2, username) {
 }
 
 async function getSession(request, env2) {
-    const secret = sessionSecret(env2);
-    if (!secret)
-        return null;
     const tok = getCookie(request, SESSION_COOKIE);
     if (!tok)
         return null;
+    const parts = tok.split('.');
+    const uid = parts.length === 2 ? ADMIN_UID : parts.length === 3 && /^\d+$/.test(parts[0]) ? Number(parts[0]) : -1;
+    if (!Number.isSafeInteger(uid) || uid < 0) return null;
+    let secret, user;
+    try {
+        if (uid === ADMIN_UID) secret = await sessionSecret(env2, uid);
+        else {
+            const row = await userCredentialState(env2, 'id', uid);
+            user = rowToUser(row);
+            if (!user || user.status !== 'active') return null;
+            secret = await sessionSecret(env2, uid, row._session_epoch ?? null);
+        }
+    } catch { return null; }
+    if (!secret) return null;
     const v = await verifySessionToken(tok, secret);
     if (!v)
         return null;
     if (v.uid === ADMIN_UID) {
         return { uid: 0, id: 0, username: "admin", role: "admin", status: "active", subdomain: "", isAdmin: true, exp: v.exp };
     }
-    const user = await getUserById(env2, v.uid);
-    if (!user || user.status !== "active")
-        return null;
     return {
         uid: user.id,
         id: user.id,
@@ -222,6 +248,7 @@ function loginFailed(ip) {
         for (const [k, v] of loginFails)
             if (now - v.first > LOGIN_WINDOW_MS)
                 loginFails.delete(k);
+        while (loginFails.size > 5e3) loginFails.delete(loginFails.keys().next().value);
     }
 }
 
@@ -229,8 +256,8 @@ function sessionCookie(token, maxAge = SESSION_TTL_SEC) {
     return `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; Max-Age=${maxAge}; HttpOnly; SameSite=Strict; Secure`;
 }
 
-async function loginJson(env2, uid, username, isAdminUser, extra = {}) {
-    const token = await makeSessionToken(sessionSecret(env2), uid);
+async function loginJson(env2, uid, username, isAdminUser, extra = {}, validatedSecret = null) {
+    const token = await makeSessionToken(validatedSecret ?? await sessionSecret(env2, uid), uid);
     return new Response(JSON.stringify({ ok: true, user: { uid, username, isAdmin: Boolean(isAdminUser) }, ...extra }), {
         status: 200,
         headers: {
@@ -242,7 +269,7 @@ async function loginJson(env2, uid, username, isAdminUser, extra = {}) {
 }
 
 async function adminLoginResponse(request, env2, creds = {}) {
-    const secret = sessionSecret(env2);
+    const secret = envStr(env2, 'SESSION_SECRET') || getAdminToken(env2) || '';
     if (!secret) {
         return json({
             ok: false,
@@ -254,22 +281,31 @@ async function adminLoginResponse(request, env2, creds = {}) {
         return json({ ok: false, error: "\u5C1D\u8BD5\u6B21\u6570\u8FC7\u591A\uFF0C\u8BF7 10 \u5206\u949F\u540E\u518D\u8BD5" }, 429);
     const username = String(creds.username || "").trim().toLowerCase();
     const password = String(creds.password != null ? creds.password : creds.token || "");
+    if (password.length > 1024 || username.length > 32) return json({ ok: false, error: '登录信息过长' }, 400);
     if (!password)
         return json({ ok: false, error: "\u8BF7\u8F93\u5165\u5BC6\u7801 / \u7BA1\u7406\u5BC6\u94A5" }, 400);
     if (!username || username === "admin") {
         const expected = getAdminToken(env2);
-        if (!expected || !await safeEqual(password, expected, secret)) {
+        let valid, state;
+        try {
+            state = await credentialState(env2);
+            valid = expected && await verifyAdminPassword(env2, password, state);
+        }
+        catch { return json({ ok: false, error: '登录配置暂不可用，请检查数据库或管理员恢复流程' }, 503); }
+        if (!valid) {
             loginFailed(ip);
             return json({ ok: false, error: "\u7BA1\u7406\u5BC6\u94A5\u9519\u8BEF" }, 401);
         }
         loginFails.delete(ip);
-        return loginJson(env2, ADMIN_UID, "admin", true);
+        return loginJson(env2, ADMIN_UID, 'admin', true, {}, await sessionSecret(env2, ADMIN_UID, state.record?.epoch ?? null));
     }
-    const user = await getUserByUsername(env2, username);
+    const row = await userCredentialState(env2, 'username', username);
+    const user = rowToUser(row);
     if (!user || user.status !== "active" || !await verifyPassword(password, user.salt, user.passwordHash)) {
         loginFailed(ip);
         return json({ ok: false, error: "\u7528\u6237\u540D\u6216\u5BC6\u7801\u9519\u8BEF" }, 401);
     }
+    const validatedSecret = await sessionSecret(env2, user.id, row._session_epoch ?? null);
     loginFails.delete(ip);
     try {
         await env2.DB.prepare("UPDATE users SET last_login = ? WHERE id = ?").bind(( /* @__PURE__ */new Date()).toISOString(), user.id).run();
@@ -277,7 +313,7 @@ async function adminLoginResponse(request, env2, creds = {}) {
     }
     catch (_) {
     }
-    return loginJson(env2, user.id, user.username, user.role === "admin");
+    return loginJson(env2, user.id, user.username, user.role === 'admin', {}, validatedSecret);
 }
 
 function makeInviteCode() {
@@ -292,7 +328,7 @@ function makeInviteCode() {
 async function handleRegister(request, env2) {
     if (!env2.DB)
         return json({ ok: false, error: "D1 \u6570\u636E\u5E93\u672A\u7ED1\u5B9A" }, 500);
-    const secret = sessionSecret(env2);
+    const secret = envStr(env2, 'SESSION_SECRET') || getAdminToken(env2) || '';
     if (!secret)
         return json({ ok: false, error: "\u672A\u914D\u7F6E ADMIN_TOKEN / SESSION_SECRET" }, 503);
     const data = await readJson(request) || {};
@@ -382,23 +418,48 @@ function entryNameError(env2, name) {
 }
 
 async function changePassword(request, env2, session) {
-    if (!session || session.uid === ADMIN_UID)
-        return json({ ok: false, error: "\u7BA1\u7406\u5458\u8BF7\u76F4\u63A5\u4FEE\u6539 ADMIN_TOKEN" }, 400);
+    if (!session) return json({ ok: false, error: 'Unauthorized' }, 401);
+    if (request.headers.get('Origin') !== new URL(request.url).origin || !request.headers.get('Content-Type')?.startsWith('application/json')) {
+        return json({ ok: false, error: '必须使用同源 JSON 请求' }, 403);
+    }
+    const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+    if (loginBlocked(ip)) return json({ ok: false, error: '尝试次数过多，请 10 分钟后再试' }, 429);
     const data = await readJson(request) || {};
-    const oldPassword = String(data.oldPassword || data.old || "");
+    const oldPassword = String(data.currentPassword ?? data.oldPassword ?? data.old ?? '');
     const newPassword = String(data.newPassword || data.new || "");
-    if (newPassword.length < 6)
-        return json({ ok: false, error: "\u65B0\u5BC6\u7801\u81F3\u5C11 6 \u4F4D" }, 400);
-    const user = await getUserById(env2, session.uid);
+    if (newPassword.length < 12 || newPassword.length > 128 || oldPassword.length > 1024) return json({ ok: false, error: '新密码须为 12–128 个字符' }, 400);
+    if (data.confirmPassword !== undefined && data.confirmPassword !== newPassword) return json({ ok: false, error: '两次新密码不一致' }, 400);
+    if (oldPassword === newPassword) return json({ ok: false, error: '新密码不能与当前密码相同' }, 400);
+    if (session.uid === ADMIN_UID) {
+        let out;
+        try { out = await changeAdminPassword(env2, oldPassword, newPassword); }
+        catch { return json({ ok: false, error: '登录配置暂不可用，请检查数据库' }, 503); }
+        if (!out.ok) {
+            if (out.status === 403) loginFailed(ip);
+            return json({ ok: false, error: out.error }, out.status);
+        }
+        loginFails.delete(ip);
+        await auditLog(env2, 'security.password', 'built-in admin changed; sessions revoked');
+        return logoutResponse();
+    }
+    const user = rowToUser(await userCredentialState(env2, 'id', session.uid));
     if (!user || !await verifyPassword(oldPassword, user.salt, user.passwordHash)) {
-        return json({ ok: false, error: "\u539F\u5BC6\u7801\u9519\u8BEF" }, 401);
+        loginFailed(ip);
+        return json({ ok: false, error: '当前密码错误' }, 403);
     }
     const salt = randomHex(16);
     const hash = await hashPassword(newPassword, salt);
-    await env2.DB.prepare("UPDATE users SET password_hash = ?, salt = ? WHERE id = ?").bind(hash, salt, user.id).run();
+    await privateStore(env2);
+    // D1 meta.changes also counts the epoch trigger's write. RETURNING identifies
+    // the actual conditional update instead of treating a successful change as
+    // a conflict because the trigger changed a second row.
+    const result = await env2.DB.prepare('UPDATE users SET password_hash = ?, salt = ? WHERE id = ? AND password_hash = ? AND salt = ? RETURNING id')
+        .bind(hash, salt, user.id, user.passwordHash, user.salt).first();
     clearUserCache();
-    await auditLog(env2, "user.password", user.username);
-    return json({ ok: true });
+    if (!result || Number(result.id) !== user.id) return json({ ok: false, error: '密码已被其他操作更新，请重新登录' }, 409);
+    loginFails.delete(ip);
+    await auditLog(env2, 'user.password', user.username + '; sessions revoked');
+    return logoutResponse();
 }
 
 export { SESSION_TTL_SEC, ADMIN_UID, enc, hexToBytes, hmacHex, safeEqual, sessionSecret, makeSessionToken, verifySessionToken, randomHex, hashPassword, verifyPassword, userCache, clearUserCache, rowToUser, publicUser, getUserById, getUserByUsername, getSession, isAdmin, loginFails, loginBlocked, loginFailed, sessionCookie, loginJson, adminLoginResponse, makeInviteCode, handleRegister, sanitizeUsername, sanitizeSubdomain, entryNameError, changePassword };

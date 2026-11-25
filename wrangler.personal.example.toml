@@ -1,0 +1,25 @@
+# First-install reference only. Copy to wrangler.local.personal.toml.
+# Existing sites must preserve their actual DB, runtime, placement, Cron and routes.
+# Secrets belong in Cloudflare, never in this file. See DEPLOY.md.
+name = "emby-personal-refactor"
+main = "dist/personal.mjs"
+compatibility_date = "2025-05-15"
+compatibility_flags = ["nodejs_compat"]
+keep_vars = true
+workers_dev = false
+
+[placement]
+mode = "smart"
+
+[vars]
+BASE_DOMAIN = "example.com"
+DNS_RECORD_NAME = "proxy"
+DISABLE_DIRECT_PROXY = "1"
+
+# Add your custom domain in the dashboard, or explicitly configure routes here.
+# Cron is intentionally omitted: configure it explicitly or retain the existing one.
+
+[[d1_databases]]
+binding = "DB"
+database_name = "replace-with-personal-database"
+database_id = "00000000-0000-0000-0000-000000000000"

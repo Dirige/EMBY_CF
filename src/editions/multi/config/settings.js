@@ -3,6 +3,12 @@ import { DOMAIN_PROXY_RULES } from "./../../../shared/http/primitives.js";
 
 var settingsCache = { exp: 0, v: null };
 
+var XFO_CURRENT = 'SAMEORIGIN';
+function normalizeXfo(value) {
+    const v = String(value || '').trim().toLowerCase();
+    return v === 'deny' ? 'DENY' : ['off', 'none', '0'].includes(v) ? '' : 'SAMEORIGIN';
+}
+
 export function invalidateSettingsCache() {
     settingsCache = { exp: 0, v: null };
 }
@@ -16,7 +22,7 @@ async function getSettings(env2) {
         try {
             const { results } = await env2.DB.prepare("SELECT key, value FROM settings").all();
             for (const r of results || [])
-                raw[r.key] = r.value;
+                if (SETTING_KEYS.includes(r.key)) raw[r.key] = r.value;
         }
         catch (_) {
         }
@@ -38,6 +44,7 @@ async function getSettings(env2) {
         relaySecret: String(raw.relay_secret || "").trim(),
         relayEnabled: String(raw.relay_enabled == null ? "1" : raw.relay_enabled) !== "0"
     };
+    XFO_CURRENT = normalizeXfo(raw.x_frame_options);
     settingsCache = { exp: now + 3e4, v };
     return v;
 }
@@ -47,6 +54,10 @@ async function setSetting(env2, key, value) {
     settingsCache = { exp: 0, v: null };
 }
 
-var SETTING_KEYS = ["health_check", "rate_limit_per_min", "manual_redirect_domains", "domain_proxy_rules", "tg_daily_report", "relay_url", "relay_secret", "relay_enabled"];
+var SETTING_KEYS = ["health_check", "rate_limit_per_min", "manual_redirect_domains", "domain_proxy_rules", "tg_daily_report", "tg_route_alerts", "x_frame_options", "relay_url", "relay_secret", "relay_enabled"];
 
-export { settingsCache, getSettings, setSetting, SETTING_KEYS };
+export function publicSettings(raw) {
+    return Object.fromEntries(Object.entries(raw).filter(([key]) => SETTING_KEYS.includes(key) && key !== 'relay_secret'));
+}
+
+export { settingsCache, XFO_CURRENT, normalizeXfo, getSettings, setSetting, SETTING_KEYS };

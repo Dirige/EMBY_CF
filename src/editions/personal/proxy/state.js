@@ -3,6 +3,8 @@ import { FALLBACK_LOG_MS } from "./../../../shared/proxy/pipeline.js";
 
 var hostDownUntil = /* @__PURE__ */ new Map();
 
+var relayPreferences = /* @__PURE__ */ new Map();
+
 var lastPlayTouched = /* @__PURE__ */ new Map();
 
 var fallbackLogAt = /* @__PURE__ */ new Map();
@@ -53,4 +55,4 @@ function rateLimited(ip, limit) {
     return false;
 }
 
-export { hostDownUntil, lastPlayTouched, fallbackLogAt, fallbackLogThrottled, CONFIG, progressMap, rateMap, rateLimited };
+export { hostDownUntil, relayPreferences, lastPlayTouched, fallbackLogAt, fallbackLogThrottled, CONFIG, progressMap, rateMap, rateLimited };

@@ -11,7 +11,7 @@ export default defineConfig({
     ...devices['Desktop Chrome'],
     viewport: { width: 1100, height: 740 },
     reducedMotion: 'reduce',
-    launchOptions: { args: ['--disable-gpu', '--no-zygote', '--single-process', '--renderer-process-limit=1'] },
+    launchOptions: { args: ['--disable-gpu'] },
     screenshot: 'only-on-failure', trace: 'off',
   },
   webServer: {

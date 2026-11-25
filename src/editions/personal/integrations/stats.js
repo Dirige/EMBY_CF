@@ -4,6 +4,7 @@ import { cfGetWorkerSummary, cfGetZoneDailySeries, cfGetZoneSummary } from "./an
 import { getStatsHost, resolveZoneInfo } from "./zone.js";
 import { getBaseDomain, getCFApiToken, getTelegramChatId, getTelegramToken } from "./../../../shared/auth/session.js";
 import { json } from "./../../../shared/http/responses.js";
+import { notificationEnv } from '../config/notifications.js';
 
 async function handleStatsRequest(env2, url) {
     const dateParam = url.searchParams.get("date") || "";
@@ -24,7 +25,8 @@ async function handleStatsRequest(env2, url) {
             dailySeries = s.series;
     }
     const zoneInfo = await resolveZoneInfo(env2);
-    const tgReady = Boolean(getTelegramToken(env2) && getTelegramChatId(env2));
+    const notifyEnv = await notificationEnv(env2);
+    const tgReady = Boolean(getTelegramToken(notifyEnv) && getTelegramChatId(notifyEnv));
     return json({
         error: null,
         data: {
@@ -46,8 +48,8 @@ async function handleStatsRequest(env2, url) {
                 zoneSource: zoneInfo.from || "",
                 hasCfToken: Boolean(getCFApiToken(env2)),
                 telegramConfigured: tgReady,
-                telegramTokenVar: getTelegramToken(env2) ? "已读取" : "未读取",
-                telegramChatVar: getTelegramChatId(env2) ? "已读取" : "未读取"
+                telegramTokenVar: getTelegramToken(notifyEnv) ? "已读取" : "未读取",
+                telegramChatVar: getTelegramChatId(notifyEnv) ? "已读取" : "未读取"
             },
             source: cfOk ? "CF" : "CF 不可用",
             lastUpdated: ( /* @__PURE__ */new Date()).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })

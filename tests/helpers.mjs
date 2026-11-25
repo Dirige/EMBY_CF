@@ -11,7 +11,7 @@ export async function loadEdition(edition, baseline = false) {
   if (!compiled.has(key)) compiled.set(key, (async () => {
     let contents;
     if (baseline) {
-      contents = await readFile(path.join(root, edition === 'personal' ? 'personal/worker.js' : 'worker.js'), 'utf8');
+      contents = await readFile(path.join(root, `tests/baselines/${edition}-worker.js`), 'utf8');
       contents += '\nexport { resolveProxyTarget, proxyDirectUrl, buildUpstreamHeaders, buildAdminHtml, MANUAL_REDIRECT_DOMAINS, hostDownUntil, classifyRequest };\n';
     } else {
       contents = `export { default } from './src/${edition}.js';
@@ -25,7 +25,9 @@ export { classifyRequest } from './src/shared/http/primitives.js';`;
     }
     const result = await build({ stdin: { contents, resolveDir: root, sourcefile: `${key}-hooks.js`, loader: 'js' }, bundle: true, format: 'esm', platform: 'node', target: 'es2022', write: false, plugins: [textAssets] });
     await mkdir(path.join(root,'dist/testing'),{recursive:true});
-    const filename=path.join(root,'dist/testing',key+'.mjs');
+    // Node runs test files in separate processes. A shared filename can be
+    // truncated by another compiler while an import is reading it.
+    const filename=path.join(root,'dist/testing',key+'-'+randomUUID()+'.mjs');
     await writeFile(filename,result.outputFiles[0].contents);
     return filename;
   })());

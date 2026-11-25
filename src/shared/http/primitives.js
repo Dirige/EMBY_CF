@@ -104,7 +104,11 @@ var REQUEST_PATTERNS = Object.freeze({
     embyImages: /(?:\/Images\/|\/Icons\/|\/Branding\/|\/emby\/covers\/)/i,
     manifestExt: /\.(?:m3u8|mpd)$/i,
     segmentExt: /\.(?:ts|m4s)$/i,
-    streaming: /\.(?:mp4|m4v|m4a|ogv|webm|mkv|mov|avi|wmv|flv)$/i
+    streaming: /\.(?:mp4|m4v|m4a|ogv|webm|mkv|mov|avi|wmv|flv|mp3|aac|flac|ogg|opus|wav)$/i,
+    // Match complete endpoints, not their descendants: /stream/hls/1.ts is
+    // a segment, whereas /Videos/id/stream.ts may be a whole movie/live stream.
+    mediaEndpoint: /\/(?:Videos|Audio)\/[^/]+\/(?:stream|original|universal|master|main)(?:\.ts)?\/?$/i,
+    downloadEndpoint: /\/Items\/[^/]+\/(?:Download|File)\/?$/i
 });
 
 var PROGRESS_THROTTLE_MS = 3e4;
@@ -118,6 +122,8 @@ function classifyRequest(pathname, method) {
         return "image";
     if (REQUEST_PATTERNS.manifestExt.test(pathname))
         return "manifest";
+    if (REQUEST_PATTERNS.mediaEndpoint.test(pathname) || REQUEST_PATTERNS.downloadEndpoint.test(pathname))
+        return "streaming";
     if (REQUEST_PATTERNS.segmentExt.test(pathname))
         return "segment";
     if (REQUEST_PATTERNS.streaming.test(pathname))

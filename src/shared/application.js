@@ -1,5 +1,6 @@
 import WORKSPACE from '../../web/shared/workspace.js?text';
 import WORKSPACE_STYLE from '../../web/shared/workspace.css?text';
+import CONSOLE from '../../web/shared/console.js?text';
 import { wallpaperResponse } from './ui/wallpaper.js';
 
 /** Composition boundary only. Media/API responses are never inspected here. */
@@ -15,7 +16,7 @@ export function createApplication({ edition, handler }) {
       const html = (await response.text())
         .replace('<body', () => `<body data-edition="${edition}"`)
         .replace('</head>', () => `<style>${WORKSPACE_STYLE}</style></head>`)
-        .replace('</body>', () => `<script>${WORKSPACE}</script></body>`);
+        .replace('</body>', () => `<script>${WORKSPACE}</script><script>${CONSOLE}</script></body>`);
       const headers = new Headers(response.headers);
       headers.delete('Content-Length'); headers.delete('Content-Encoding');
       headers.set('Cache-Control', 'no-store');

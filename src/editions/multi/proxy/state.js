@@ -8,10 +8,13 @@ function fallbackLogThrottled(key) {
     if (now - (fallbackLogAt.get(key) || 0) < FALLBACK_LOG_MS)
         return true;
     fallbackLogAt.set(key, now);
+    while (fallbackLogAt.size > 512) fallbackLogAt.delete(fallbackLogAt.keys().next().value);
     return false;
 }
 
 var hostDownUntil = /* @__PURE__ */ new Map();
+
+var relayPreferences = /* @__PURE__ */ new Map();
 
 var lastPlayTouched = /* @__PURE__ */ new Map();
 
@@ -44,4 +47,4 @@ function rateLimited(ip, limit) {
     return false;
 }
 
-export { fallbackLogAt, fallbackLogThrottled, hostDownUntil, lastPlayTouched, CONFIG, progressMap, rateMap, rateLimited };
+export { fallbackLogAt, fallbackLogThrottled, hostDownUntil, relayPreferences, lastPlayTouched, CONFIG, progressMap, rateMap, rateLimited };

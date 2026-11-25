@@ -4,6 +4,7 @@ import { getStatsHost, resolveZoneInfo } from "./zone.js";
 import { cfGetWorkerRequests, cfGetZoneAnalytics, dayRangeIso, sendTelegramMessage, tgEscape } from "./../../../shared/integrations/analytics.js";
 import { formatBytes, getShanghaiParts } from "./../../../shared/http/primitives.js";
 import { isValidHttpUrl } from "./../../../shared/http/validation.js";
+import { notificationEnv, recordNotification } from '../config/notifications.js';
 
 async function cfGetZoneSummary(env2, dateKey) {
     const token = getCFApiToken(env2);
@@ -190,9 +191,6 @@ async function buildDailyReport(env2, dateKey) {
     const traffic = cfOk ? Number(cf.bytes) || 0 : null;
     const lines = [];
     lines.push("📊 <b>Emby Proxy 日报</b>");
-    const host = getStatsHost(env2);
-    if (host)
-        lines.push("<code>" + tgEscape(host) + "</code>");
     lines.push("<code>" + tgEscape(key) + "</code>");
     lines.push("");
     lines.push("请求数：" + (requests == null ? "（CF 数据不可用）" : "<b>" + requests + "</b>"));
@@ -211,7 +209,7 @@ async function buildDailyReport(env2, dateKey) {
     }
     if (!cfOk) {
         lines.push("");
-        lines.push("<i>CF 数据不可用：" + tgEscape(String(cf.error).slice(0, 160)) + "</i>");
+        lines.push("<i>CF 数据不可用，请登录后台检查统计配置</i>");
     }
     lines.push("");
     lines.push("<i>" + tgEscape(( /* @__PURE__ */new Date()).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })) + "</i>");
@@ -221,21 +219,24 @@ async function buildDailyReport(env2, dateKey) {
 async function sendDailyReport(env2, dateKey) {
     const key = /^\d{4}-\d{2}-\d{2}$/.test(dateKey || "") ? dateKey : getShanghaiParts().dateKey;
     const text = await buildDailyReport(env2, key);
-    const tg = await sendTelegramMessage(env2, text);
+    const result = await sendTelegramMessage(await notificationEnv(env2), text);
+    const tg = { ok: result.ok, ...(result.ok ? {} : { error: 'Telegram 发送失败，请检查通知配置和机器人权限' }) };
     let webhook = { ok: false, skipped: true };
     if (env2.NOTIFY_WEBHOOK && isValidHttpUrl(env2.NOTIFY_WEBHOOK)) {
         try {
             const res = await fetch(env2.NOTIFY_WEBHOOK, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ text, content: text, date: key })
+                body: JSON.stringify({ text, content: text, date: key }),
+                signal: AbortSignal.timeout(15000)
             });
             webhook = { ok: res.ok, status: res.status };
         }
         catch (e) {
-            webhook = { ok: false, error: String(e?.message || e) };
+            webhook = { ok: false, error: 'Webhook 发送失败' };
         }
     }
+    await recordNotification(env2, 'daily', tg.ok || webhook.ok);
     return { ok: tg.ok || webhook.ok, telegram: tg, webhook, date: key, text };
 }
 

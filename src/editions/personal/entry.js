@@ -72,9 +72,11 @@ var worker_default = {
             return json({ baseDomain: getBaseDomain(env2) || "yourdomain.com" });
         }
         if (url.pathname === "/admin/api/login" && request.method === "POST") {
+            if (request.headers.get('Origin') && request.headers.get('Origin') !== url.origin)
+                return json({ ok: false, error: 'Forbidden origin' }, 403);
             try {
                 const body = await request.json();
-                return adminLoginResponse(request, env2, String(body.token || "").trim());
+                return adminLoginResponse(request, env2, String(body.token || ""));
             }
             catch (e) {
                 return json({ ok: false, error: e.message }, 400);

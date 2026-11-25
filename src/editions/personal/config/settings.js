@@ -27,7 +27,7 @@ async function getSettings(env2) {
         try {
             const { results } = await env2.DB.prepare("SELECT key, value FROM settings").all();
             for (const r of results || [])
-                raw[r.key] = r.value;
+                if (SETTING_KEYS.includes(r.key)) raw[r.key] = r.value;
         }
         catch (_) {
         }
@@ -55,6 +55,6 @@ async function setSetting(env2, key, value) {
     settingsCache = { exp: 0, v: null };
 }
 
-var SETTING_KEYS = ["health_check", "rate_limit_per_min", "manual_redirect_domains", "domain_proxy_rules", "tg_daily_report", "x_frame_options"];
+var SETTING_KEYS = ["health_check", "rate_limit_per_min", "manual_redirect_domains", "domain_proxy_rules", "tg_daily_report", "tg_route_alerts", "x_frame_options"];
 
 export { settingsCache, XFO_CURRENT, normalizeXfo, getSettings, setSetting, SETTING_KEYS };

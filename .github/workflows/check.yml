@@ -1,7 +1,9 @@
-name: Refactor checks (no deployment)
+name: Build and test both editions (no deployment)
 on:
   workflow_dispatch:
   pull_request:
+  push:
+    branches: [master, refactor/playback-first]
 permissions:
   contents: read
 jobs:
@@ -14,5 +16,30 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
+      - run: npm audit --audit-level=high
       - run: npx playwright install --with-deps chromium
       - run: npm run check
+      - name: Verify published Worker and offline tutorial files are current
+        run: git diff --exit-code -- worker.js personal/worker.js docs/offline/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: workers-and-offline-guides
+          path: |
+            worker.js
+            personal/worker.js
+            dist/manifest.json
+            docs/offline/*.html
+            docs/*部署教程.md
+            docs/assets/deploy/
+            DEPLOY.md
+            docs/UPGRADE.md
+  relay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+          cache-dependency-path: relay/go.sum
+      - run: go test -race -count=1 ./...
+        working-directory: relay

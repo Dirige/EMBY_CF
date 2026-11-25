@@ -1,181 +1,79 @@
-# EMBY_CF
+# EMBY_CF · Emby / Jellyfin 反向代理
 
-**Emby 反向代理 · 多用户路由面板**
+Cloudflare Workers + D1，个人版与多人版独立部署，共享播放代理内核。保留原生媒体流、Range、签名 URL 和取消行为，不预取整部视频，也不承诺公网加速。
 
-单文件 Cloudflare Worker，无需服务器、无需构建。集成反代、优选域名 DNS、访问统计、Telegram 日报、多用户子域名和 VPS 中继分流，仓库当前版本 **v6.8.11-multi**，入口文件 [worker.js](worker.js)。
-
-> **本地重构副本（未部署、未推送）**：当前分支 `refactor/local-acceptance` 正在把个人版与多人版拆成共享核心 + 两个独立发行版。开发环境、验收步骤、已知限制与发布门槛见 **[HANDOFF.md](HANDOFF.md)**。线上仍是个人版 `v6.4.9`、多人版 `v6.8.11-multi`，本分支的任何构建都没有上线。
-
-![Platform](https://img.shields.io/badge/Cloudflare-Workers-F38020?style=flat-square&logo=cloudflare&logoColor=white)
-![Database](https://img.shields.io/badge/D1-Database-00E5FF?style=flat-square)
-![Version](https://img.shields.io/badge/version-v6.8.11--multi-41d9ff?style=flat-square)
-[![License](https://img.shields.io/badge/License-MIT-00FF9D?style=flat-square)](LICENSE)
-
-[![优选域名监控](https://img.shields.io/badge/Youxuan-yx.255432.xyz-00E5FF?style=flat-square)](https://yx.255432.xyz/)
-[![Telegram 群组](https://img.shields.io/badge/Telegram-Join-26A5E4?style=flat-square&logo=telegram&logoColor=white)](https://t.me/+7cbXthaBajszNjI1)
-
-- 优选域名监控：<https://yx.255432.xyz/>
-- Telegram 群组：<https://t.me/+7cbXthaBajszNjI1>
-
-[部署教程](DEPLOY.md) · [环境变量](#环境变量) · [API Token 权限](#api-token-权限) · [常见问题](DEPLOY.md#18-故障排查)
-
-## 个人版
-
-单用户 + VPS 中继分流版（三态分流 `off/on/image`、视频直连失败自动回退 VPS、一键部署脚本）：见 **[personal/README.md](personal/README.md)**。
-
-**版本对齐原则**：`personal/worker.js` 与 CF 线上部署的 proxy worker 保持同一版本。当前为 **v6.4.9**（在 v6.4.8 基础上把内置网盘直链白名单补齐到与多人版一致的 66 条，版本号 +1）。
-
-- v6.4.8 曾验证：源码按线上相同目录结构（全局 wrangler + 项目根目录 `worker.js`，`compatibility_date=2025-05-15` + `nodejs_compat`）执行 `wrangler deploy --dry-run --outdir dist`，产物与线上部署版本字节级一致（236004 字节）。
-- v6.4.9 采用「在 v6.4.8 线上产物上直接打补丁」方式部署，改动仅两处：网盘直链白名单由 34 条补齐到 66 条（新增 32 条，含 `alipan.com`，附分组注释）、`CURRENT_VERSION` 改为 `v6.4.9`；线上回读 236820 字节，与本地补丁文件 sha256 逐字节一致。
-
----
-
-## 功能
-
-| 功能 | 说明 |
-| --- | --- |
-| Emby 反向代理 | 支持 HTTP、HTTPS、WebSocket、Range 和流媒体 |
-| 多目标线路 | 同一路由可填多个上游，按顺序尝试并熔断 |
-| 前后端分离反代 | 可选「推流地址」用于匹配源站的 302/播放 URL，改写回本路由后由 Worker 反代；不向推流服务器预先拼接 Emby 播放路径 |
-| 智能缓存 | 图片和静态资源走边缘缓存，字幕与带凭据的图片不缓存 |
-| 多用户系统 | 邀请码注册，用户名即子域名，自动创建 CNAME |
-| 用户配额 | 默认 20 条私有路由，管理员可按用户调整为 1–200 |
-| 管理后台 | 路由、DNS、用户、邀请码、优选域名、统计、审计、设置、导入导出 |
-| DNS 管理 | 自动识别 Zone，一键创建/替换记录，支持优选域名 |
-| 访问统计 | D1 按小时聚合请求与流量，Cloudflare Analytics 作为补充 |
-| 通知 | Telegram 日报、线路异常告警、通用 Webhook |
-| 访问控制 | IP 透传模式、IP 白名单/黑名单、自定义请求头 |
-| VPS 中继 | 后台配置 VPS 中继地址与密钥；CF 直连失败（网络错误/401/403/451）自动切换 VPS，覆盖全部路由与 `/https://源站:端口` 直连代理路径；中继限额超限自动回落直连 |
-
-### 前后端分离服的填写方式
-
-- **目标地址**填写界面/API 地址，例如 `https://cf.sfcj.org`。
-- **推流地址**填写需要纳入反代的推流服务器基址，例如 `https://media.emby.pro`。支持多行；每个地址对应独立映射，不是按顺序尝试的同路径备用线路。
-- 初始播放请求仍交给目标地址。源站跳向已配置推流地址的 `Location` 会改写为 `/<路由>/__stream/<编号>/<实际路径>`，播放器下一跳仍通过 Worker 反代，而不是直连推流域名。
-- 保留实际路径、签名查询、Range/If-Range、HEAD 和 206 响应；推流 body 直接透传，不等待完整下载。
-- `PlaybackInfo` 中匹配推流配置的绝对 `DirectStreamUrl`、`TranscodingUrl`、`DeliveryUrl` 也会改写；不修改媒体源的存储 `Path`、相对播放 URL 或其它域名。
-- 推流请求仍遵守本用户路由的启停、IP 黑白名单和自定义头，并默认使用界面服务器的 `Referer`（可被自定义头覆盖）。不借用公开 `/https://...` 入口。
-- **不需要 VPS 才能使用**；已有中继仍仅作为请求失败时的回退。显式推流配置优先于网盘直连白名单；常规服、网盘直连服留空即可。
-
-参考：[Emby 播放分离 nginx 配置](https://github.com/lateautumn2/Emby-nginx-reProxy/blob/main/misakaf.conf)。实际起播速度需使用有效播放会话实测，不能由无鉴权或虚构影片请求的 404/403 判断。
-
-### VPS 中继说明
-
-在 **后台 → 设置 → VPS 中继** 填入中继地址（如 `https://relay.example.com:2087`）和密钥，点「测试连通」——联通后**所有路由自动启用**中继（默认即为启用状态）。
-
-- **自动切换**：请求始终 CF 直连优先，只有直连失败（网络错误、401/403/451 地区拦截）才经 VPS 中继重发，不额外消耗 VPS 流量
-- **回落保护**：VPS 流量限额超限（响应带 `X-Relay-Denied` 头）时静默回落直连，用户无感
-- **可观测**：回退成功带 `X-Relay-Fallback: 1` 响应头，审计日志记录 `relay.fallback` 事件（5 分钟节流）
-- 中继服务端（Go 单文件）与个人版共用，部署与限额配置见 [personal/README.md](personal/README.md)
-
-## 快速开始
-
-### 方式一：GitHub Actions（推荐）
-
-1. Fork 本仓库。
-2. 在 **Settings（设置） → Secrets and variables（机密和变量） → Actions** 添加下表的 Secrets。
-3. 打开 **Actions（操作） → Deploy to Cloudflare Workers → Run workflow（运行工作流）**。
-4. 工作流会自动创建 D1、部署 Worker、创建 `BASE_DOMAIN/*` 与 `*.用户域名/*` 路由和 DNS 记录。
-5. 到 Cloudflare 控制台给 Worker 添加运行变量 `ADMIN_TOKEN`、`BASE_DOMAIN`、`CF_API_TOKEN`。
-6. 打开 `https://BASE_DOMAIN/admin`，用户名 `admin`，密码为 `ADMIN_TOKEN`。
-
-| GitHub Secret | 必填 | 用途 | 示例 |
+| 发行版 | 当前版本 | 可直接复制部署的文件 | 图文教程 |
 | --- | --- | --- | --- |
-| `CF_API_TOKEN` | 是 | 部署与 DNS 操作，权限见下表 | `cf_xxx` |
-| `CF_ACCOUNT_ID` | 是 | Cloudflare 账户 ID | `a1b2c3...` |
-| `CF_ZONE_ID` | 是 | 域名所在 Zone ID | `023e...` |
-| `BASE_DOMAIN` | 是 | 主入口完整域名；也兼容 `CF_DOMAIN` | `fd.example.com` |
-| `CF_WORKER_NAME` | 否 | Worker 名称，默认 `fd` | `emby-proxy` |
-| `CF_DNS_API_TOKEN` | 否 | 单独的 DNS 令牌；不填复用 `CF_API_TOKEN` | `cf_xxx` |
-| `CF_D1_ID` | 否 | 已有 D1 数据库 ID；不填自动查询或创建 | `xxxx-...` |
+| 个人版 | `v6.4.9-refactor.8` | [personal/worker.js](personal/worker.js) | [个人版部署教程](docs/个人版部署教程.md) |
+| 多人版 | `v6.8.11-multi-refactor.3` | [worker.js](worker.js) | [多人版部署教程](docs/多人版部署教程.md) |
 
-### 方式二：Cloudflare 控制台手动部署
+**新手先看 [部署总指南](DEPLOY.md)**。已有站点先看 [升级与回滚](docs/UPGRADE.md)，不要重新建库、覆盖域名或混用两版数据库。
 
-1. 在 Cloudflare 创建 D1 数据库。
-2. 新建 Worker，粘贴 [worker.js](worker.js) 并部署。
-3. 绑定 D1，变量名必须是 **`DB`**。
-4. 添加运行变量 `ADMIN_TOKEN`、`BASE_DOMAIN`、`CF_API_TOKEN`。
-5. 为 Worker 绑定自定义域，或添加 `BASE_DOMAIN/*`、`*.用户域名/*` 路由。
-6. 打开 `https://BASE_DOMAIN/admin` 登录。
+## 离线教程
 
-## 环境变量
+- 两篇 Markdown 的插图都存放在 [docs/assets/deploy/](docs/assets/deploy/)，无金山文档／图床外链；下载整个仓库后仍能看图。
+- [个人版单文件 HTML](docs/offline/personal.html) · [多人版单文件 HTML](docs/offline/multi.html)：在 GitHub 文件页点 **Raw / Download raw file** 保存，双击即可离线阅读；图片、样式全部内嵌，不需要本地服务。
+- 注册、控制台操作和下载软件本身仍需联网。“离线”仅指阅读教程不需要联网。
+- 教程依据作者提供的图文稿更新；截图中的账号、凭据和验证命令已遮盖，操作文字按当前版本修订。
 
-在 Cloudflare 控制台进入 Worker → **Settings（设置） → Variables and Secrets（变量和机密）** 配置。
+## 两版如何选
 
-| 变量 | 必填 | 说明 | 示例 |
-| --- | --- | --- | --- |
-| `ADMIN_TOKEN` | 是 | 管理员登录密钥，同时作为后台密码 | 32 位以上随机字符串 |
-| `BASE_DOMAIN` | 是 | 主入口完整域名，用于 Zone 解析、DNS、统计和用户域名推导 | `fd.example.com` |
-| `CF_API_TOKEN` | 是 | Cloudflare API 令牌，用于 DNS 与统计 | `cf_xxx` |
-| `SESSION_SECRET` | 否 | 会话签名密钥；不填回退到 `ADMIN_TOKEN` | 独立随机字符串 |
-| `DNS_RECORD_NAME` | 否 | 主入口 DNS 记录名，仅当与 `BASE_DOMAIN` 不同时填写 | `fd` / `proxy` |
-| `USER_DOMAIN` | 否 | 用户入口域名后缀；不填自动推导 | `example.com` |
-| `CF_ZONE_ID` | 否 | 手动指定 Zone ID；不填自动查询 | `023e...` |
-| `CF_ACCOUNT_ID` | 否 | 手动指定 Account ID；不填自动查询 | `a1b2...` |
-| `TELEGRAM_BOT_TOKEN` | 否 | Telegram 机器人 Token | `123456:ABC...` |
-| `TELEGRAM_CHAT_ID` | 否 | Telegram 会话 ID，群组为负数 | `123456789` |
-| `NOTIFY_WEBHOOK` | 否 | 通用通知 Webhook | `https://...` |
-
-完整变量、兼容别名和回退规则见 [DEPLOY.md 的环境变量表](DEPLOY.md#7-环境变量表)。
-
-## 绑定
-
-| 类型 | 变量名 | 用途 | 必填 |
-| --- | --- | --- | --- |
-| D1 database（D1 数据库） | `DB` | 路由、用户、邀请码、统计、设置、审计 | 是 |
-
-> 首次请求会自动建表并升级旧表，无需手动执行 SQL。绑定名必须是 `DB`，不能改。
-
-## API Token 权限
-
-入口：**My Profile（我的个人资料） → API Tokens（API 令牌） → Create Custom Token（创建自定义令牌）**。
-
-| 权限（Cloudflare 显示名） | 用途 | GitHub Actions 部署 | Worker 运行 |
-| --- | --- | --- | --- |
-| Account · Workers Scripts · Edit（账户 · Workers 脚本 · 编辑） | 部署 Worker | 必需 | 否 |
-| Account · D1 · Edit（账户 · D1 · 编辑） | 创建/查询 D1 | 必需 | 否 |
-| Zone · Workers Routes · Edit（区域 · Workers 路由 · 编辑） | 创建主入口和通配路由 | 必需 | 否 |
-| Zone · Zone · Read（区域 · 区域 · 读取） | 查询 Zone ID 与区域列表 | 必需 | 必需 |
-| Zone · DNS · Edit（区域 · DNS · 编辑） | 创建、修改、删除 DNS 记录 | 必需 | 必需 |
-| Zone · Analytics · Read（区域 · 分析 · 读取） | 读取 Zone 级统计 | 建议 | 建议 |
-| Account · Account Analytics · Read（账户 · 账户分析 · 读取） | 读取全站/Worker 统计 | 建议 | 建议 |
-
-> 一个令牌同时勾选以上权限最省事；不想给部署权限时，可另建一个只含后三项的令牌给 Worker 的 `CF_API_TOKEN`。
-
-## 常用入口
-
-| 路径 | 说明 | 权限 |
+| 能力 | 个人版 | 多人版 |
 | --- | --- | --- |
-| `/` | 首页 / 用户控制台 | 公开 |
-| `/admin` | 管理后台 | 管理员 |
-| `/register` | 邀请码注册 | 公开 |
-| `/stats` | JSON 统计接口 | 公开 |
-| `/health` | 健康检查，返回版本与节点 | 公开 |
-| `/<前缀>/...` | 路由反向代理 | 按路由 |
-| `/https://...` | 直连反向代理（可关闭） | 公开 |
+| 后台路由、诊断、复制、筛选、导入预检 | 支持 | 支持，按角色／归属限制 |
+| 网页改密、加密 TG 保存／测试／停用、保密告警 | 支持 | 支持，按账号撤销会话 |
+| VPS 中继 | 全局配置 + 每条线路「自动／开／关」 | 保留全局开关，不提供逐线路三模式 |
+| 用户／邀请／配额／子域名 | 无 | 支持 |
+| 独立推流地址及 PlaybackInfo 映射 | 不使用多人版映射模型 | 支持 |
 
-## 安全提示
+中继可选，不配 VPS 也能使用登记线路。不能把个人版认证、密钥、证书或 D1 复制到多人版。
 
-- `ADMIN_TOKEN` 就是管理员密码，请使用强随机值，不要写进仓库。
-- `CF_API_TOKEN` 按最小权限创建，泄露后立即吊销重建。
-- 直连代理 `/https://...` 默认开放，存在被滥用的风险；可用 `DISABLE_DIRECT_PROXY=1` 关闭，或用 `DIRECT_PROXY_ALLOW` 限制目标。
-- 公网部署前建议导出一次 D1 备份，并定期备份配置。
+## 代理与安全边界
 
-## 文档
+- GET/HEAD 有界故障切换；最多 3 个主目标、5 次重定向、9 次出站。响应头单次 10 秒／总计 20 秒预算，拿到响应头后不按此计时器截断长视频。
+- 登录／PlaybackInfo 白名单 POST 仅在明确 401/403/451、完整可重放请求体时尝试一次 VPS；最多 256 KiB／5 秒。不因超时、连接故障或 5xx 重放写请求，不中途重发成功视频流。
+- 回退成功后实例内优先 VPS 2 分钟，由并发受限只读请求探测恢复；多人版按用户隔离。详见 [自动回退说明](docs/AUTO-RELAY-FAILOVER.md)。
+- Range / If-Range / HEAD / 206 / 416 保真；跳转逐跳检查，跨域剥离凭据，保留签名编码和重复查询参数。
+- 私有资源不进共享缓存；后台 Cookie 不转给源站；任意原始 URL 转发默认关闭，日常请用登记线路。
+- Bot **只做通知**，不加入入站管理，也不接管现有 webhook。实际起播、拖动、长播、字幕和通知送达需自行验收。
 
-- [DEPLOY.md](DEPLOY.md)：从零部署、GitHub Actions、变量、权限、Cron、Telegram、用户系统、备份与排错。
+## 本地构建与测试
 
-## 排障经验
+需要 Node.js **>=22.14**：
 
-- **播放起播慢 / 播几秒就卡缓冲，海报与登录一切正常**：
-先想到"Range 请求编码协商被破坏"。播放器带 `Accept-Encoding: gzip` 时，个别上游（或其前置反代）会把响应压缩，Range/断点续传的语义就乱了（数据偏移对不上），表现为能登录能扫库、播放时反复"等待缓冲"，甚至拖进度条失败。
-  - 修法：给对应路由的「自定义请求头」填 `Accept-Encoding: identity`，强制上游返回未压缩字节，立即生效。
-  - 也可以在 worker 代码层对 streaming/Range 请求转发前强制 `Accept-Encoding: identity`，参考官方公益服的最小自建反代（很多公益服文档要求反代对 Range 请求这样做）。
-- **VPS 中继"并发连接过多"提示**：中继的单 IP 并发限制按 TCP 来源 IP 计数；经 Cloudflare 回源时所有用户共享 CF 出口 IP，额度容易共享耗尽。出现该提示优先调大 `per_ip_max_conns`（`/etc/emby-relay/config.json` + 重启服务）。
-- **播放器报"速度慢但重开就好"**：先看中继统计的 `denied.conns` 是否持续增长（并发闸拒绝新 Range 连接导致播放器停顿重试），再查单流限速/线路丢包。
+```bash
+npm ci
+npx playwright install --with-deps chromium
+npm run check
+npm run package:workers
+npm run docs:build
+```
 
-## 声明 · 许可
+- 可维护源码：`src/`、`web/`；构建到 `dist/personal.mjs` / `dist/multi.mjs`。
+- `npm run package:workers` 同步根目录 `worker.js` 和 `personal/worker.js`，方便网页粘贴部署。**不要直接编辑生成的单文件。**
+- 历史回归基线单独保存在 `tests/baselines/`，不再占用最新代码下载路径。
+- `npm run docs:build` 只读取本地 Markdown 和图片，生成内嵌图片 HTML，不下载网络内容。
+- `npm run preview` 仅绑定 `127.0.0.1`：个人版 `4273/__preview`、多人版 `4274/__preview`。合成上游与独立 D1，不可直接暴露公网。
+- GitHub Actions 只做检查和打包，**不会自动部署 Cloudflare**。Wrangler 占位模板必须复制成本地配置并核对后再用。
 
-本项目仅用于学习、研究和自有服务代理测试。请遵守当地法律法规、Cloudflare 服务条款和上游服务条款，使用产生的一切后果由使用者自行承担。
+## VPS 中继源码
 
-License：MIT
+最新加固源码和测试见 [relay/](relay/README.md)，支持 TLS、HMAC、Range、WebSocket 和既有 HLS 路径。
+
+`personal/relay.go`、`personal/bin/` 和旧 `personal/deploy_vps.sh` 是历史 0.3.0 方案，不是加固版交付；不要用旧一键脚本覆盖已有服务。升级中继前先备份配置和二进制，并安排维护窗口。
+
+## 验收与文档
+
+两版发布基准：339 项自动测试、20 项浏览器测试、130 项多人版全库隔离检查通过，依赖审计零漏洞。文档／打包调整后的复验结果见 [GitHub 发布说明](docs/GITHUB-PUBLISH.md)。这些结果不是实际媒体播放速度或长期可用性的保证。
+
+- [通知加密与密码安全](docs/WEB-NOTIFICATIONS-SECURITY.md)
+- [多轮修复同步清单](docs/MULTI-SYNC-CHECKLIST.md)
+- [个人版验收记录](docs/PERSONAL-PUBLIC-ACCEPTANCE.md) · [多人版验收／回滚记录](docs/MULTI-PUBLIC-ACCEPTANCE.md)
+- [构建 manifest](docs/BUILD-MANIFEST.json) · [版本发布 manifest](docs/RELEASE-MANIFEST-20261124.json)
+- [开发交接](HANDOFF.md) · [历史线下验收与性能边界](docs/OFFLINE-ACCEPTANCE.md)
+
+## 使用须知
+
+仅代理你有权访问的服务；遵守 Cloudflare、域名商和上游条款，留意 Workers / D1 / VPS 的配额与计费。Cloudflare 免费套餐不等于无限视频带宽。请勿提交 Token、Cookie、密码、证书私钥、生产数据库或用户日志。
+
+MIT License；教程截图由作者提供，仅用于本项目部署说明。优选域名监控：<https://yx.255432.xyz/>。

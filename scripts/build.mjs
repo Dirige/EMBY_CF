@@ -2,6 +2,8 @@ import { build } from 'esbuild';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { CURRENT_VERSION as PERSONAL_VERSION } from '../src/editions/personal/version.js';
+import { CURRENT_VERSION as MULTI_VERSION } from '../src/editions/multi/version.js';
 export const root = path.resolve(import.meta.dirname, '..');
 export const textAssets = {
   name: 'editable-text-assets',
@@ -24,11 +26,11 @@ export async function bundle(entry, outfile, extra = {}) {
 }
 export async function buildAll() {
   await mkdir(path.join(root, 'dist'), { recursive: true });
-  const manifest = { channel: 'local-acceptance', baseline: '4e0357e', editions: {} };
+  const manifest = { channel: 'playback-first-offline', baseline: '4e0357e', deployed: false, editions: {} };
   for (const edition of ['personal', 'multi']) {
     const result = await bundle(`src/${edition}.js`, `dist/${edition}.mjs`);
     const bytes = await readFile(path.join(root, `dist/${edition}.mjs`));
-    manifest.editions[edition] = { file: `${edition}.mjs`, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+    manifest.editions[edition] = { file: `${edition}.mjs`, version: edition === 'personal' ? PERSONAL_VERSION : MULTI_VERSION, schemaId: edition === 'personal' ? 'proxy-v6.4.8' : 'multi-v6.8.5', bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
     await writeFile(path.join(root, `dist/${edition}.meta.json`), JSON.stringify(result.metafile, null, 2));
     console.log(`${edition}: ${bytes.length} bytes, sha256 ${manifest.editions[edition].sha256.slice(0,16)}`);
   }

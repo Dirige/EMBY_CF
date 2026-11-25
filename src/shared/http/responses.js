@@ -2,11 +2,15 @@
 import { CORS_JSON, DROP_RESPONSE_HEADERS, SECURITY_HEADERS } from "./primitives.js";
 
 function sanitizeResponseHeaders(upstreamHeaders) {
-    const headers = new Headers();
-    for (const [key, value] of upstreamHeaders.entries()) {
-        if (!DROP_RESPONSE_HEADERS.has(key.toLowerCase()))
-            headers.set(key, value);
+    // Copy first to retain distinct Set-Cookie fields; never combine them via
+    // iteration + set(). WebSocket responses bypass this ordinary HTTP path.
+    const headers = new Headers(upstreamHeaders);
+    for (const name of (headers.get('Connection') || '').split(',')) {
+        const token = name.trim();
+        if (token) headers.delete(token);
     }
+    for (const name of DROP_RESPONSE_HEADERS) headers.delete(name);
+    for (const name of ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'te', 'trailer', 'upgrade', 'proxy-authenticate', 'proxy-authorization']) headers.delete(name);
     return headers;
 }
 

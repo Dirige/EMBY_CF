@@ -1,0 +1,21 @@
+{
+  "channel": "playback-first-offline",
+  "baseline": "4e0357e",
+  "deployed": false,
+  "editions": {
+    "personal": {
+      "file": "personal.mjs",
+      "version": "v6.4.9-refactor.2-local",
+      "schemaId": "proxy-v6.4.8",
+      "bytes": 254957,
+      "sha256": "e2d683dfa65c4512e1ea1903a791c93d3f01e50f44245ced41be0560be1e9a62"
+    },
+    "multi": {
+      "file": "multi.mjs",
+      "version": "v6.8.11-multi-refactor.2-local",
+      "schemaId": "multi-v6.8.5",
+      "bytes": 366541,
+      "sha256": "5e2bf182fe19ea9c52ae8499a61790dc155f823bcc53b56cbd13e56b21dfa3fa"
+    }
+  }
+}

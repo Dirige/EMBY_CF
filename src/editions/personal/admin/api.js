@@ -1,10 +1,12 @@
 // Baseline: 4e0357e. Edition-specific behavior is intentionally retained.
-import { isAdmin } from "./../auth/session.js";
+import { isAdmin, loginBlocked, loginFailed, loginFails } from "./../auth/session.js";
+import { changePassword, credentialState } from '../auth/password.js';
+import { notificationStatus, saveTelegramConfig, testTelegram } from '../config/notifications.js';
+import { notificationId } from '../integrations/alert-privacy.js';
 import { json } from "./../../../shared/http/responses.js";
-import { getBaseDomain, getDnsRecordName, getTelegramChatId, getTelegramToken, logoutResponse, toFqdn } from "./../../../shared/auth/session.js";
+import { getBaseDomain, getDnsRecordName, logoutResponse, toFqdn } from "./../../../shared/auth/session.js";
 import { sendDailyReport } from "./../integrations/analytics.js";
 import { auditLog } from "./../../../shared/observability/audit.js";
-import { reportFailureHint } from "./../../../shared/integrations/analytics.js";
 import { handleStatsRequest } from "./../integrations/stats.js";
 import { SETTING_KEYS, getSettings, setSetting, invalidateSettingsCache } from "./../config/settings.js";
 import { normalizeDnsTarget, normalizePrefix, readJson, splitTargets, validatePrefix } from "./../../../shared/admin/api.js";
@@ -17,6 +19,9 @@ import { getRelayConfig, invalidateRelayCache, normalizeRelayBase, relayPortFrom
 import { runHealthCheck } from "./../maintenance.js";
 import { getStatsHost, invalidateZoneInfoCache, resolveZoneInfo } from "./../integrations/zone.js";
 import { createOrUpdateDNSRecord } from "./../integrations/dns.js";
+import { diagnoseRoute } from '../../../shared/observability/diagnostics.js';
+import { inspectImport } from '../../../shared/admin/import-plan.js';
+import { normalizeRelayMode } from '../relay/mode.js';
 
 async function handleAdminApi(request, env2, url) {
     if (!await isAdmin(request, env2))
@@ -28,6 +33,44 @@ async function handleAdminApi(request, env2, url) {
     }
     if (url.pathname === "/admin/api/logout" && request.method === "POST")
         return logoutResponse();
+    if (['/admin/api/notifications', '/admin/api/notifications/test', '/admin/api/security/password'].includes(url.pathname)) {
+        if (request.method === 'POST' && (request.headers.get('Origin') !== url.origin || !request.headers.get('Content-Type')?.startsWith('application/json')))
+            return json({ error: '必须使用同源 JSON 请求' }, 403);
+        if (url.pathname === '/admin/api/notifications') {
+            if (request.method === 'GET') return json({ success: true, ...await notificationStatus(env2) });
+            if (request.method === 'POST') {
+                const data = await readJson(request);
+                if (!data) return json({ error: '无效 JSON' }, 400);
+                try { await saveTelegramConfig(env2, data); }
+                catch { return json({ error: '保存失败，请检查 Token、数字 Chat ID 及 SETTINGS_ENCRYPTION_KEY 主密钥' }, 400); }
+                await auditLog(env2, 'notification.save', data.clear === true ? 'disabled' : 'updated');
+                return json({ success: true, ...await notificationStatus(env2) });
+            }
+        }
+        if (url.pathname === '/admin/api/notifications/test' && request.method === 'POST') {
+            const out = await testTelegram(env2);
+            await auditLog(env2, 'notification.test', out.ok ? 'ok' : 'failed');
+            return json(out, out.ok ? 200 : 502);
+        }
+        if (url.pathname === '/admin/api/security/password') {
+            if (request.method === 'GET') return json({ success: true, customPassword: Boolean((await credentialState(env2)).record) });
+            if (request.method === 'POST') {
+                const ip = request.headers.get('cf-connecting-ip') || 'unknown';
+                if (loginBlocked(ip)) return json({ error: '尝试次数过多，请 10 分钟后再试' }, 429);
+                const data = await readJson(request);
+                if (!data || data.newPassword !== data.confirmPassword) return json({ error: '两次新密码不一致' }, 400);
+                const out = await changePassword(env2, data.currentPassword, data.newPassword);
+                if (!out.ok) {
+                    if (out.status === 403) loginFailed(ip);
+                    return json({ error: out.error }, out.status);
+                }
+                loginFails.delete(ip);
+                await auditLog(env2, 'security.password', 'changed; sessions revoked');
+                return logoutResponse();
+            }
+        }
+        return json({ error: 'Method not allowed' }, 405);
+    }
     if (url.pathname === "/admin/api/report/send" && request.method === "POST") {
         const out = await sendDailyReport(env2, url.searchParams.get("date") || "");
         await auditLog(env2, "report.send", out.ok ? "ok" : "fail: " + (out.telegram.rawError || out.telegram.error || out.webhook.error || "unknown"));
@@ -37,7 +80,7 @@ async function handleAdminApi(request, env2, url) {
             telegram: out.telegram,
             webhook: out.webhook,
             preview: out.text,
-            hint: out.ok ? "" : reportFailureHint(env2, out)
+            hint: out.ok ? "" : '发送失败，请检查通知配置和发送权限'
         }, out.ok ? 200 : 502);
     }
     if (url.pathname === "/admin/api/stats" && request.method === "GET") {
@@ -49,12 +92,7 @@ async function handleAdminApi(request, env2, url) {
             return json({
                 success: true,
                 settings: st.raw,
-                notify: {
-                    telegram: Boolean(getTelegramToken(env2) && getTelegramChatId(env2)),
-                    webhook: Boolean(env2.NOTIFY_WEBHOOK),
-                    tokenVar: getTelegramToken(env2) ? "已读取" : "未读取",
-                    chatVar: getTelegramChatId(env2) ? "已读取" : "未读取"
-                }
+                notify: await notificationStatus(env2)
             });
         }
         if (request.method === "POST") {
@@ -81,7 +119,7 @@ async function handleAdminApi(request, env2, url) {
         return json({ success: true, logs: results || [] });
     }
     if (url.pathname === "/admin/api/export" && request.method === "GET") {
-        const routes = (await env2.DB.prepare("SELECT prefix, target, remark, cache_img, compat_mode, ip_mode, sort_order, enabled, custom_headers, ip_allow, ip_block FROM routes ORDER BY sort_order, prefix").all()).results || [];
+        const routes = (await env2.DB.prepare("SELECT prefix, target, remark, cache_img, compat_mode, ip_mode, use_relay, sort_order, enabled, custom_headers, ip_allow, ip_block FROM routes ORDER BY sort_order, prefix").all()).results || [];
         const domains = (await env2.DB.prepare("SELECT domain, name FROM optimized_domains WHERE is_builtin = 0").all()).results || [];
         const st = await getSettings(env2);
         const body = JSON.stringify({ version: CURRENT_VERSION, exportedAt: ( /* @__PURE__ */new Date()).toISOString(), routes, domains, settings: st.raw }, null, 2);
@@ -90,6 +128,12 @@ async function handleAdminApi(request, env2, url) {
                 "Content-Disposition": 'attachment; filename="proxy-config-' + ( /* @__PURE__ */new Date()).toISOString().slice(0, 10) + '.json"',
                 "Cache-Control": "no-store"
             } });
+    }
+    if (url.pathname === '/admin/api/import/preview' && request.method === 'POST') {
+        const data = await readJson(request);
+        const existing = (await env2.DB.prepare('SELECT prefix FROM routes').all()).results || [];
+        const plan = inspectImport(data, existing.map(route => route.prefix), SETTING_KEYS);
+        return json(plan, plan.success ? 200 : 400);
     }
     if (url.pathname === "/admin/api/import" && request.method === "POST") {
         const data = await readJson(request);
@@ -106,7 +150,7 @@ async function handleAdminApi(request, env2, url) {
                 continue;
             }
             stmts.push(env2.DB.prepare(`INSERT OR REPLACE INTO routes (prefix, target, remark, cache_img, compat_mode, ip_mode, use_relay, last_play, sort_order, enabled, custom_headers, ip_allow, ip_block)
-         VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT last_play FROM routes WHERE prefix = ?), ''), ?, ?, ?, ?, ?)`).bind(normalizePrefix(r.prefix), targets.join(","), String(r.remark || ""), r.cache_img === "off" ? "off" : "on", r.compat_mode === "on" ? "on" : "off", normalizeIpMode(r.ip_mode), r.use_relay === "on" || r.use_relay === "image" ? r.use_relay : "off", normalizePrefix(r.prefix), Number(r.sort_order) || 0, r.enabled === 0 ? 0 : 1, String(r.custom_headers || ""), String(r.ip_allow || ""), String(r.ip_block || "")));
+         VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, (SELECT use_relay FROM routes WHERE prefix = ?), 'auto'), COALESCE((SELECT last_play FROM routes WHERE prefix = ?), ''), ?, ?, ?, ?, ?)`).bind(normalizePrefix(r.prefix), targets.join(","), String(r.remark || ""), r.cache_img === "off" ? "off" : "on", r.compat_mode === "on" ? "on" : "off", normalizeIpMode(r.ip_mode), normalizeRelayMode(r.use_relay, null), normalizePrefix(r.prefix), normalizePrefix(r.prefix), Number(r.sort_order) || 0, r.enabled === 0 ? 0 : 1, String(r.custom_headers || ""), String(r.ip_allow || ""), String(r.ip_block || "")));
             nr++;
         }
         for (const d of Array.isArray(data.domains) ? data.domains : []) {
@@ -158,6 +202,13 @@ async function handleAdminApi(request, env2, url) {
         const results = await Promise.all(targets.map(async (t) => ({ target: t, ...await probeTarget(t) })));
         return json({ success: true, results });
     }
+    if (url.pathname === '/admin/api/routes/diagnose' && request.method === 'POST') {
+        const data = await readJson(request) || {};
+        const route = await env2.DB.prepare('SELECT * FROM routes WHERE prefix = ?').bind(normalizePrefix(data.prefix)).first();
+        if (!route) return json({ error: '路由不存在' }, 404);
+        const relay = await getRelayConfig(env2);
+        return json(await diagnoseRoute(route, request, { edition: 'personal', relayConfigured: !!(relay?.enabled && relay?.secret) }));
+    }
     if (url.pathname === "/admin/api/health/run" && request.method === "POST") {
         const out = await runHealthCheck(env2, true);
         return json({ success: true, ...out });
@@ -175,7 +226,7 @@ async function handleAdminApi(request, env2, url) {
             for (const h of health)
                 if (h.down)
                     downMap[h.prefix] = (downMap[h.prefix] || 0) + 1;
-            return json((results || []).map((r) => ({ ...r, down_count: downMap[r.prefix] || 0 })));
+            return json(await Promise.all((results || []).map(async (r) => ({ ...r, notification_id: await notificationId(env2, r.prefix), down_count: downMap[r.prefix] || 0 }))));
         }
         if (request.method === "POST") {
             const data = await readJson(request);
@@ -200,7 +251,7 @@ async function handleAdminApi(request, env2, url) {
             if (!validIpList(allowList) || !validIpList(blockList))
                 return json({ error: "IP 黑白名单格式不合法（支持 IPv4、IPv6 和 IPv4 CIDR，用逗号或空格分隔）" }, 400);
             const isRename = oldPrefix && oldPrefix !== prefix;
-            const existing = await env2.DB.prepare("SELECT sort_order, last_play, enabled FROM routes WHERE prefix = ?").bind(isRename ? oldPrefix : prefix).first();
+            const existing = await env2.DB.prepare("SELECT sort_order, last_play, enabled, use_relay FROM routes WHERE prefix = ?").bind(isRename ? oldPrefix : prefix).first();
             if (isRename) {
                 const clash = await env2.DB.prepare("SELECT 1 AS x FROM routes WHERE prefix = ?").bind(prefix).first();
                 if (clash)
@@ -209,7 +260,7 @@ async function handleAdminApi(request, env2, url) {
             else if (!oldPrefix && existing) {
                 return json({ error: "路径 /" + prefix + " 已存在，请直接编辑它" }, 409);
             }
-            const insert = env2.DB.prepare("INSERT OR REPLACE INTO routes (prefix, target, remark, cache_img, compat_mode, ip_mode, use_relay, last_play, sort_order, enabled, custom_headers, ip_allow, ip_block) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(prefix, targets.join(","), data.remark || "", data.cache_img === "off" ? "off" : "on", data.compat_mode === "on" ? "on" : "off", normalizeIpMode(data.ip_mode), data.use_relay === "on" || data.use_relay === "image" ? data.use_relay : "off", existing?.last_play || "", existing?.sort_order || 0, existing?.enabled === 0 ? 0 : 1, String(data.custom_headers || "").trim(), allowList.join(","), blockList.join(","));
+            const insert = env2.DB.prepare("INSERT OR REPLACE INTO routes (prefix, target, remark, cache_img, compat_mode, ip_mode, use_relay, last_play, sort_order, enabled, custom_headers, ip_allow, ip_block) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").bind(prefix, targets.join(","), data.remark || "", data.cache_img === "off" ? "off" : "on", data.compat_mode === "on" ? "on" : "off", normalizeIpMode(data.ip_mode), normalizeRelayMode(data.use_relay, normalizeRelayMode(existing?.use_relay)), existing?.last_play || "", existing?.sort_order || 0, existing?.enabled === 0 ? 0 : 1, String(data.custom_headers || "").trim(), allowList.join(","), blockList.join(","));
             if (isRename)
                 await env2.DB.batch([insert, env2.DB.prepare("DELETE FROM routes WHERE prefix = ?").bind(oldPrefix)]);
             else
@@ -458,18 +509,14 @@ async function handleAdminApi(request, env2, url) {
             return json({ ok: false, error: "请先填写中继地址和密钥" });
         const t0 = Date.now();
         try {
-            const res = await fetch(new Request(c.relayUrl + "/_relay/health", { headers: { "X-Relay-Key": c.secret } }));
-            const text = (await res.text()).slice(0, 200);
-            let body = null;
-            try {
-                body = JSON.parse(text);
-            }
-            catch (_) {
-            }
-            return json({ ok: res.ok, status: res.status, ms: Date.now() - t0, version: body?.version || "", tls: body?.tls });
+            const res = await fetch(new Request(c.relayUrl + "/_relay/health", { headers: { "X-Relay-Key": c.secret }, signal: AbortSignal.timeout(8000) }));
+            const body = await readJson(res, { limit: 16384, timeoutMs: 5000 });
+            const ok = res.ok && body?.ok === true;
+            return json({ ok, status: res.status, ms: Date.now() - t0, version: typeof body?.version === 'string' ? body.version.slice(0, 80) : '', tls: body?.tls === true,
+                ...(ok ? {} : { error: '中继未返回有效健康状态，请检查服务与鉴权' }) });
         }
         catch (e) {
-            return json({ ok: false, ms: Date.now() - t0, error: String(e?.message || e).slice(0, 200) });
+            return json({ ok: false, ms: Date.now() - t0, error: '中继连接失败或超时，请检查服务、证书与网络' });
         }
     }
     if (url.pathname === "/admin/api/relay/stats" && request.method === "GET") {

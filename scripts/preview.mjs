@@ -1,17 +1,26 @@
 import http from 'node:http';
 import { Readable } from 'node:stream';
 import { randomBytes } from 'node:crypto';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Miniflare, Log, LogLevel } from 'miniflare';
 import { buildAll, bundle, root } from './build.mjs';
 import { fixtureResponse } from './fixtures.mjs';
 
-await buildAll();
+const editions = [['personal', 4273], ['multi', 4274]];
+const selected = process.argv[2];
+if (process.argv.length > 3 || (selected && !editions.some(([edition]) => edition === selected))) {
+  throw new Error('Usage: npm run preview -- [personal|multi]');
+}
+if (!selected) await buildAll();
+// Optional local photo fixture, cached explicitly during UI setup. Preview
+// never downloads anything automatically and still blocks all external fetches.
+let wallpaper;
+try { wallpaper = await readFile(path.join(root, '.local/assets/wallpaper.jpg')); } catch {}
 const services = [], servers = [];
 let stopping = false;
 try {
-  for (const [edition, port] of [['personal', 4273], ['multi', 4274]]) {
+  for (const [edition, port] of editions.filter(([name]) => !selected || name === selected)) {
     await bundle(`src/local/${edition}.js`, `dist/preview-${edition}.mjs`);
     await mkdir(path.join(root, '.local/d1', edition), { recursive: true, mode: 0o700 });
     const mf = new Miniflare({
@@ -26,6 +35,11 @@ try {
       const host = req.headers.host;
       if (![ `127.0.0.1:${port}`, `localhost:${port}` ].includes(host)) { res.writeHead(403); res.end('Loopback Host required'); return; }
       const url = new URL(req.url, `http://${host}`);
+      if (url.pathname === '/bing-wallpaper' && wallpaper && ['GET', 'HEAD'].includes(req.method)) {
+        res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': wallpaper.length, 'Cache-Control': 'public, max-age=300', 'X-Content-Type-Options': 'nosniff' });
+        res.end(req.method === 'HEAD' ? undefined : wallpaper);
+        return;
+      }
       const controller = new AbortController();
       res.on('close', () => { if (!res.writableEnded) controller.abort(); });
       try {

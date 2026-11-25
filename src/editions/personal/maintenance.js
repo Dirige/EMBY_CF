@@ -7,6 +7,8 @@ import { getSettings } from "./config/settings.js";
 import { getShanghaiParts } from "./../../shared/http/primitives.js";
 import { claimReportSlot } from "./../../shared/integrations/analytics.js";
 import { sendDailyReport } from "./integrations/analytics.js";
+import { healthAlertMessages, privateHealthAlert } from './integrations/alert-privacy.js';
+import { notificationEnv, recordNotification } from './config/notifications.js';
 
 async function runHealthCheck(env2, manual = false) {
     if (!env2.DB)
@@ -16,30 +18,38 @@ async function runHealthCheck(env2, manual = false) {
     const stateMap = new Map((states || []).map((r) => [r.prefix + "|" + r.target, r]));
     const jobs = [];
     for (const r of routes || []) {
-        for (const t of splitTargets(r.target))
-            jobs.push({ r, t });
+        for (const [index, t] of splitTargets(r.target).entries())
+            jobs.push({ r, t, index });
     }
     const limited = jobs.slice(0, 40);
     const probes = await Promise.all(limited.map(async (j) => ({ ...j, res: await probeTarget(j.t) })));
     const nowIso = ( /* @__PURE__ */new Date()).toISOString();
     const stmts = [];
     const alerts = [];
-    for (const { r, t, res } of probes) {
+    for (const { r, t, index, res } of probes) {
         const prev = stateMap.get(r.prefix + "|" + t);
         const fail = res.ok ? 0 : (prev?.fail_count || 0) + 1;
         const down = res.ok ? 0 : fail >= 2 ? 1 : prev?.down || 0;
         const changed = (prev?.down || 0) !== down;
         if (changed)
-            alerts.push(`${down ? "🔴 线路异常" : "🟢 线路恢复"}：/${r.prefix}${r.remark ? "（" + r.remark + "）" : ""}
-${t}${res.ok ? "" : "\n" + (res.error || "HTTP " + res.status)}`);
+            alerts.push(await privateHealthAlert(env2, r.prefix, index, down, { remark: r.remark, targets: splitTargets(r.target) }));
         stmts.push(env2.DB.prepare(`INSERT INTO route_health (prefix, target, down, fail_count, latency, last_check, last_change) VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(prefix, target) DO UPDATE SET down = excluded.down, fail_count = excluded.fail_count, latency = excluded.latency,
          last_check = excluded.last_check, last_change = CASE WHEN route_health.down != excluded.down THEN excluded.last_check ELSE route_health.last_change END`).bind(r.prefix, t, down, fail, res.ms, nowIso, nowIso));
     }
     if (stmts.length)
         await env2.DB.batch(stmts);
-    if (alerts.length)
-        await notify(env2, alerts.join("\n\n"));
+    const settings = await getSettings(env2);
+    if (alerts.length && String(settings.raw.tg_route_alerts ?? '1') !== '0') {
+        const effectiveEnv = await notificationEnv(env2);
+        let ok = true;
+        // Split only between alerts, never inside an escaped remark or HTML entity.
+        for (const text of healthAlertMessages(alerts)) {
+            const result = await notify(effectiveEnv, text);
+            ok = result.ok && ok;
+        }
+        await recordNotification(env2, 'health', ok);
+    }
     return { checked: probes.length, alerts };
 }
 

@@ -24,13 +24,42 @@ function validatePrefix(prefix) {
     return null;
 }
 
-async function readJson(request) {
-    try {
-        return await request.json();
-    }
-    catch {
+async function readJson(request, { limit = 2 * 1024 * 1024, timeoutMs = 5000 } = {}) {
+    if (!request.body) return null;
+    const declared = request.headers.get('Content-Length');
+    if (/^\d+$/.test(declared || '') && Number(declared) > limit) {
+        void request.body.cancel().catch(() => {});
         return null;
     }
+    const reader = request.body.getReader();
+    const chunks = [];
+    let bytes = 0;
+    const deadline = Date.now() + timeoutMs;
+    try {
+        while (true) {
+            let timer;
+            let part;
+            try {
+                part = await Promise.race([reader.read(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('JSON body timed out')), Math.max(1, deadline - Date.now())); })]);
+            } finally { clearTimeout(timer); }
+            if (part.done) break;
+            bytes += part.value.byteLength;
+            if (bytes > limit) {
+                void reader.cancel().catch(() => {});
+                return null;
+            }
+            chunks.push(part.value);
+        }
+        const body = new Uint8Array(bytes);
+        let offset = 0;
+        for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+        return JSON.parse(new TextDecoder().decode(body));
+    }
+    catch {
+        void reader.cancel().catch(() => {});
+        return null;
+    }
+    finally { reader.releaseLock(); }
 }
 
 var ROUTE_CACHE_TTL = 3e4;
