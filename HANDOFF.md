@@ -8,6 +8,7 @@
 ## 0. 当前状态与继续工作边界
 
 - **2026-11-25 GitHub／教程整理**：用户授权同步两版到 `Dirige/EMBY_CF` 并提供个人版图文稿。最新生成代码回到 `worker.js`／`personal/worker.js` 下载路径，原始回归基线移至 `tests/baselines/`；新增两版图文、38 张本地脱敏插图、两份图片内嵌离线 HTML、升级指南和 `relay/` 加固源码。`npm run package:workers`／`npm run docs:build` 可复现。最终 345 自动／22 浏览器／14 中继 race 回归通过，依赖审计零漏洞，运行代码哈希不变。仅同步 GitHub，不改任何生产部署；推送及最终状态见 `docs/GITHUB-PUBLISH.md`。
+- **本轮实际交付**：GitHub 设备授权过期后用户选择先要本地文件，因此尚未推送。优选 IP／优选域名记录按用户要求明确为灰云（DNS only），代码不改。提供完整源码包和离线图文包；后续需用户重新确认 GitHub 授权才可继续上传，不能把当前本地提交描述为已上传。
 - **个人版**：`v6.4.9-refactor.8`，Worker `emby-personal-refactor`，版本 `7c045fde-6c5e-4458-9634-cfaa333fbcef`，100%，入口 `https://proxy.255432.de5.net`；回滚 `.7`／`436d96b8-33be-458d-ae0d-4e5546f47454`。本轮多人版同步时仅重建核对哈希，没有重新上传个人版。不要尝试旧网页密码，也不要改变「守候」的 `on` 或「非越」的 `auto`。
 - **多人版**：`v6.8.11-multi-refactor.3`，Worker `fd`，版本 `82eb4768-8589-438b-beb5-a230bc560299`，100%，入口 `https://fd.255432.de5.net`；原／回滚版本 `79de3cb9-518a-4823-83f0-03ebc2b7ecf0`。完整多轮同步范围见 `docs/MULTI-SYNC-CHECKLIST.md`，发布／回滚安全边界见 `docs/MULTI-PUBLIC-ACCEPTANCE.md`。
 - **最终检查**：`CI=1 npm run check` 通过，339 自动／20 浏览器，零失败／跳过；依赖审计零漏洞。冻结发布包在真实 workerd `2026-11-24`、原 fd 日期／空 flags 下通过 130 项全库隔离检查，出站次数 0。发布后原 22 张表／602 条记录、原列及索引全部保留，未改用户密码、邀请码、DNS 或线路。

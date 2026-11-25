@@ -26,9 +26,11 @@
 
 ### 域名接入不要混淆
 
-1. **新手建议：Worker 自定义域**。在 Worker → 设置 → 域和路由 → 添加 → 自定义域，绑定完整主入口。Cloudflare 管理 DNS 与证书；不要再人为把此记录改成灰云优选 CNAME。
+**本项目添加的优选 IP／优选域名记录必须保持灰云（DNS only）**。优选接入与普通橙云接入是不同方案，不能把其中一种的代理状态套到另一种。
+
+1. **优选 IP／优选域名接入（作者教程采用）**：A／AAAA／CNAME 指向选定 IP／域名，记录名与实际入口 Host 一致，**灰云**。保留既有 Worker 的域名／Route 与可承接该 Host 的接入条件，再用该入口 `/health` 验证。灰云本身不自动建立 Worker 绑定或证书；若没命中 Worker，排查接入链路，而不是把优选记录改橙云。
 2. **普通 Workers Route**：如 `fd.example.com/*`、`*.example.com/*`，需要域名已托管在 Cloudflare，且对应 DNS 记录为**橙云代理**。通配 Route 不会自动产生 DNS。多人版可使用通配 DNS／逐个用户记录，但必须留意更具体 Route 与证书覆盖。
-3. **灰云 CNAME／优选 IP** 是独立的高级接入方式，不是普通 Workers Route 的通用前提。仓库保留旧界面创建灰云用户记录的行为，使用普通 Route 时请手动核对／改为橙云；重新创建记录可能恢复灰云。第三方优选地址失效或未正确承接 Host 时，仅加 Route 不保证流量进 Worker。
+3. **Worker 自定义域（不使用优选的另一选择）**：在 Worker → 设置 → 域和路由 → 添加 → 自定义域，绑定完整主入口，由 Cloudflare 管理 DNS 与证书。不要把它的自动 DNS 与第 1 种的灰云优选记录混为一谈。
 
 先用主入口 `/health` 验证，再验证一个用户子域名 `/health`。不要给整个根域随意绑定通配 Route，避免接管其他业务。官方说明：[Routes](https://developers.cloudflare.com/workers/configuration/routing/routes/) 与 [Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)。
 
@@ -75,7 +77,7 @@ Zone 资源只选你自己的目标区域。多人版对明确 Host 范围缺失
 
 1. 创建两个不同 D1（只部署一个版本时创建一个即可）。绑定名为 `DB`，首次请求自动增量初始化，不执行“重置数据”。
 2. 粘贴对应生成文件、设置变量／Secrets，保存部署。
-3. 添加主域名，访问 `https://你的入口/health`：必须看到所选版本。
+3. 按所选接入方案添加主域名；优选 IP／优选域名记录保持灰云。访问 `https://你的入口/health`：必须看到所选版本。
 4. 打开 `/admin`：个人版输入初始 `ADMIN_TOKEN`；多人版用户名 `admin`（或留空）及初始管理密码。
 5. 在网页设置新的 12–128 字符密码，旧会话撤销。初始根仍需保留，不是改密后可删除的临时口令。
 6. 添加一条有访问授权的线路，例如前缀 `demo`、目标 `https://media.example.net`。客户端服务器地址填 `https://你的入口/demo`，不要填 `/System/Info/Public` 这类具体接口。

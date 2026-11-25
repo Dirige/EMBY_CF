@@ -32,6 +32,7 @@ test('deployment docs: all original tutorial illustrations are local and metadat
     const markdown = await readFile(path.join(repoRoot, guide.file), 'utf8');
     assert.ok(!/!\[[^\]]*\]\(\s*(?:https?:|\/\/)/.test(markdown));
     assert.ok(!/kdocs\.cn|api\/v3\/office\/copy/.test(markdown));
+    assert.match(markdown, /优选[\s\S]{0,100}灰云/, 'Preferred IP/domain instructions must explicitly keep DNS-only');
   }
 });
 
