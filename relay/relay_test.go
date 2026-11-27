@@ -170,6 +170,9 @@ func TestSignedRawPathAndRangeSurvive(t *testing.T) {
 		if r.Header.Get("Range") != "bytes=0-3" {
 			t.Error("Range lost")
 		}
+		if _, ok := r.Header["X-Forwarded-For"]; ok {
+			t.Errorf("X-Forwarded-For forwarded upstream: %#v", r.Header["X-Forwarded-For"])
+		}
 		if r.Header.Get("X-Relay-Auth") != "" {
 			t.Error("relay credentials leaked")
 		}
@@ -181,6 +184,7 @@ func TestSignedRawPathAndRangeSurvive(t *testing.T) {
 	target, _ := url.Parse(upstream.URL + "/signed%2Ffile?sign=a%2Bb%2f&x=1&x=2")
 	req := httptest.NewRequest("GET", "http://relay.test/wrong%2Fpath", nil)
 	req.Header.Set("Range", "bytes=0-3")
+	req.Header.Set("X-Forwarded-For", "198.51.100.42")
 	req.Header.Set("X-Relay-Auth", "fixture")
 	recorder := httptest.NewRecorder()
 	buildProxy(target).ServeHTTP(recorder, req)

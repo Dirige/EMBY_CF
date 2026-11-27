@@ -880,6 +880,10 @@ func buildProxy(target *url.URL) *httputil.ReverseProxy {
 		for _, h := range []string{"X-Relay-Target", "X-Relay-Auth", "X-Relay-Ts", "X-Relay-Key"} {
 			req.Header.Del(h)
 		}
+		// ReverseProxy's legacy Director mode appends the inbound peer to
+		// X-Forwarded-For unless the header map contains this key with a nil value.
+		// Keep client IP forwarding disabled for every upstream request.
+		req.Header["X-Forwarded-For"] = nil
 	}
 	return &httputil.ReverseProxy{
 		Director:      director,
